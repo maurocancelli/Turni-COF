@@ -2,6 +2,13 @@ import streamlit as st
 import pandas as pd
 import datetime
 import os
+import io
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
 
 st.set_page_config(page_title="Pianificazione Turni - COF", layout="wide")
 st.title("📦 Pianificazione Mensile Reparto E-commerce")
@@ -53,6 +60,134 @@ def colora_celle(valore):
     if "06:00" in v:     return "background-color:#e6ffed;color:#1a7f37;"
     if "12:30" in v or "13:00" in v: return "background-color:#fbefff;color:#8250df;"
     return ""
+
+def genera_pdf_settimana(df, week_num, lun_w, col_labels):
+    """
+    Genera un PDF stile 'foglio Excel': una riga per dipendente,
+    due colonne (inizio/fine) per ogni giorno Lun-Dom.
+    Per assenze (RIPOSO/FERIE/MALATTIA/PERMESSO) il testo è scritto
+    centrato sulle due colonne del giorno.
+    """
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=landscape(A4),
+        leftMargin=8*mm, rightMargin=8*mm, topMargin=10*mm, bottomMargin=10*mm
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "TitoloWeek", parent=styles["Heading1"],
+        fontSize=18, textColor=colors.HexColor("#4CAF50"), spaceAfter=4
+    )
+
+    # Ordine giorni per il PDF: Lun-Dom (esclude Dom_P, mostra Dom_S come Domenica)
+    giorni_pdf = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
+    nomi_giorni_pdf = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"]
+
+    elementi = []
+    elementi.append(Paragraph(f"WEEK {week_num}", title_style))
+    elementi.append(Spacer(1, 4*mm))
+
+    # ── Header riga 1: nomi giorni con data ──
+    header1 = ["DIPENDENTE"]
+    header2 = [""]
+    for chiave, nome_g in zip(giorni_pdf, nomi_giorni_pdf):
+        lbl = col_labels.get(chiave, nome_g)
+        # estrai il numero del giorno dalla label tipo "Lun 9/6"
+        try:
+            giorno_num = lbl.split(" ")[1].split("/")[0]
+        except Exception:
+            giorno_num = ""
+        header1.append(f"{nome_g} {giorno_num}")
+        header1.append("")  # seconda colonna del giorno (merge)
+        header2.append("")
+        header2.append("")
+
+    data_table = [header1]
+
+    for _, row in df.iterrows():
+        riga = [row["Dipendente"]]
+        for chiave in giorni_pdf:
+            val = str(row[chiave])
+            if val in ASSENTE:
+                riga.append(val)
+                riga.append("")
+            elif "-" in val and ":" in val:
+                inizio, fine = val.split("-")
+                riga.append(inizio)
+                riga.append(fine)
+            else:
+                riga.append(val)
+                riga.append("")
+        data_table.append(riga)
+
+    n_cols = len(header1)
+    col_widths = [38*mm] + [12*mm] * (n_cols - 1)
+
+    tbl = Table(data_table, colWidths=col_widths, repeatRows=1)
+
+    style_cmds = [
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2E7D32")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#999999")),
+        ("BOX", (0, 0), (-1, -1), 1.2, colors.black),
+        ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+        ("ALIGN", (0, 0), (0, -1), "LEFT"),
+        ("LEFTPADDING", (0, 0), (0, -1), 4),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F5F5")]),
+    ]
+
+    # Merge celle header per ogni giorno (2 colonne) e merge verticale header
+    style_cmds.append(("SPAN", (0, 0), (0, 0)))
+    for gi in range(len(giorni_pdf)):
+        c1 = 1 + gi * 2
+        c2 = c1 + 1
+        style_cmds.append(("SPAN", (c1, 0), (c2, 0)))
+        # separatore verticale più marcato tra giorni
+        style_cmds.append(("LINEAFTER", (c2, 0), (c2, -1), 1.2, colors.black))
+
+    # Colora celle assenza nel body
+    palette = {
+        "RIPOSO":   colors.HexColor("#F2F2F2"),
+        "FERIE":    colors.HexColor("#FFE6CC"),
+        "MALATTIA": colors.HexColor("#FFCCCC"),
+        "PERMESSO": colors.HexColor("#E6F2FF"),
+    }
+    for r_idx, row in enumerate(df.itertuples(), start=1):
+        for gi, chiave in enumerate(giorni_pdf):
+            val = str(getattr(row, chiave))
+            if val in palette:
+                c1 = 1 + gi * 2
+                c2 = c1 + 1
+                style_cmds.append(("SPAN", (c1, r_idx), (c2, r_idx)))
+                style_cmds.append(("BACKGROUND", (c1, r_idx), (c2, r_idx), palette[val]))
+                txt_color = {
+                    "RIPOSO": colors.HexColor("#7F7F7F"),
+                    "FERIE": colors.HexColor("#CC6600"),
+                    "MALATTIA": colors.HexColor("#CC0000"),
+                    "PERMESSO": colors.HexColor("#0066CC"),
+                }[val]
+                style_cmds.append(("TEXTCOLOR", (c1, r_idx), (c2, r_idx), txt_color))
+                style_cmds.append(("FONTNAME", (c1, r_idx), (c2, r_idx), "Helvetica-Bold"))
+            elif "06:00" in val:
+                c1 = 1 + gi * 2
+                c2 = c1 + 1
+                style_cmds.append(("BACKGROUND", (c1, r_idx), (c2, r_idx), colors.HexColor("#E6FFED")))
+            elif "12:30" in val or "13:00" in val:
+                c1 = 1 + gi * 2
+                c2 = c1 + 1
+                style_cmds.append(("BACKGROUND", (c1, r_idx), (c2, r_idx), colors.HexColor("#FBEFFF")))
+
+    tbl.setStyle(TableStyle(style_cmds))
+    elementi.append(tbl)
+
+    doc.build(elementi)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 def file_settimana(anno, week):
     return f"Turni_W{week:02d}_{anno}.csv"
@@ -284,11 +419,16 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             else:
                 df.at[idx, chiave] = t_base
     # ── Dom_P: copia esatta della Dom_S della settimana precedente ──
+    # ECCEZIONE: chi è in FERIE questa settimana lavora SEMPRE Dom_P
+    # (è l'ultimo giorno prima di partire), a prescindere dalla rotazione.
     for idx, row in df.iterrows():
         data_mal = row["_data_mal"]
         in_mal_dom_p = (data_mal is not None) and (data_dom_p <= data_mal)
         if in_mal_dom_p:
             df.at[idx, "Dom_P"] = "MALATTIA"
+        elif row["_in_ferie"]:
+            # Lavora obbligatoriamente la domenica prima di partire in ferie
+            df.at[idx, "Dom_P"] = TURNO_DOMENICA
         else:
             val_prec = dom_s_prec.get(row["Dipendente"], None)
             if val_prec is None:
@@ -573,7 +713,7 @@ with tab_turni:
                     key=f"editor_{anno_w}_{week_w}"
                 )
 
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     if not definitiva:
                         if st.button("🔒 Blocca come Definitiva", type="primary",
@@ -619,6 +759,16 @@ with tab_turni:
                         mime="text/csv",
                         use_container_width=True,
                         key=f"down_{anno_w}_{week_w}"
+                    )
+                with col4:
+                    pdf_data = genera_pdf_settimana(df_modificato, week_w, lun_w, col_labels)
+                    st.download_button(
+                        label="🖨️ Esporta PDF",
+                        data=pdf_data,
+                        file_name=f"Turni_W{week_w}_{anno_w}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key=f"pdf_{anno_w}_{week_w}"
                     )
 
                 if not definitiva and ha_mod:
