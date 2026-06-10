@@ -458,8 +458,6 @@ with tab_turni:
             marker = " ◀" if is_cur else ""
             labels_week.append(f"{flag_def} W{week_w} ({dom_p.day}/{dom_p.month}–{dom_s.day}/{dom_s.month}){marker}")
 
-        tabs_week = st.tabs(labels_week)
-
         # ── Pre-genera tutta la catena PRIMA di renderizzare i tab ──
         # La Dom_S di ogni settimana alimenta la Dom_P di quella successiva,
         # garantendo propagazione corretta anche su settimane non salvate.
@@ -468,32 +466,30 @@ with tab_turni:
         for j, (anno_w, week_w, lun_w) in enumerate(settimane):
             df_salvato = carica_settimana(anno_w, week_w)
 
-            if df_salvato is not None:
-                df_chain = df_salvato.copy()
-                # Aggiorna Dom_P dalla catena
-                if j > 0:
-                    anno_pw, week_pw, _ = settimane[j - 1]
-                    df_prec = tabelloni.get((anno_pw, week_pw))
-                    if df_prec is not None and "Dom_S" in df_prec.columns:
-                        dom_s_map = df_prec.set_index("Dipendente")["Dom_S"].to_dict()
-                        for ridx, rrow in df_chain.iterrows():
-                            nome = rrow.get("Dipendente")
-                            if nome and nome in dom_s_map:
-                                df_chain.at[ridx, "Dom_P"] = dom_s_map[nome]
+            # Ricava dom_prec_bool dalla catena gia costruita (o dal file storico se j==0)
+            if j == 0:
+                dom_prec_bool = calcola_domeniche_precedenti(week_w, anno_w)
             else:
-                if j == 0:
-                    dom_prec_bool = calcola_domeniche_precedenti(week_w, anno_w)
+                anno_pw, week_pw, _ = settimane[j - 1]
+                df_prec = tabelloni.get((anno_pw, week_pw))
+                if df_prec is not None and "Dom_S" in df_prec.columns:
+                    dom_prec_bool = {
+                        rrow["Dipendente"]: str(rrow["Dom_S"]) not in ASSENTE
+                        for _, rrow in df_prec.iterrows()
+                        if rrow.get("Dipendente")
+                    }
                 else:
-                    anno_pw, week_pw, _ = settimane[j - 1]
-                    df_prec = tabelloni.get((anno_pw, week_pw))
-                    if df_prec is not None and "Dom_S" in df_prec.columns:
-                        dom_prec_bool = {
-                            rrow["Dipendente"]: str(rrow["Dom_S"]) not in ASSENTE
-                            for _, rrow in df_prec.iterrows()
-                            if rrow.get("Dipendente")
-                        }
-                    else:
-                        dom_prec_bool = calcola_domeniche_precedenti(week_w, anno_w)
+                    dom_prec_bool = calcola_domeniche_precedenti(week_w, anno_w)
+
+            if df_salvato is not None:
+                # Usa dati salvati ma FORZA Dom_P coerente con la catena
+                df_chain = df_salvato.copy()
+                for ridx, rrow in df_chain.iterrows():
+                    nome = rrow.get("Dipendente")
+                    if nome and nome in dom_prec_bool:
+                        ha_lav = dom_prec_bool[nome]
+                        df_chain.at[ridx, "Dom_P"] = "RIPOSO" if ha_lav else "06:00-13:00"
+            else:
                 df_chain = genera_tabellone(week_w, anno_w, lun_w, dom_prec_bool, target_pct)
 
             tabelloni[(anno_w, week_w)] = df_chain
