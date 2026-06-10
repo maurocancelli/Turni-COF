@@ -11,7 +11,15 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 
 st.set_page_config(page_title="Pianificazione Turni - COF", layout="wide")
-st.title("📦 Pianificazione Mensile Reparto E-commerce")
+st.markdown("""
+    <style>
+        .block-container {
+            padding-top: 1rem;
+            padding-bottom: 1rem;
+        }
+    </style>
+""", unsafe_allow_html=True)
+st.markdown("### 📦 Pianificazione Mensile Reparto E-commerce")
 
 # ─────────────────────────────────────────────
 # COSTANTI
@@ -603,48 +611,23 @@ for delta in range(-1, 14):
     settimane.append((iso[0], iso[1], lun))
 
 # ─────────────────────────────────────────────
-# SIDEBAR
+# PARAMETRI (stato persistente, valori usati dall'algoritmo)
 # ─────────────────────────────────────────────
-st.sidebar.header("⚙️ Parametri Operativi")
-pieces_ora = st.sidebar.number_input("Pezzi/Ora (Default):", value=100, min_value=1)
-st.sidebar.divider()
-st.sidebar.subheader("🎯 Forza Lavoro Richiesta (%)")
-st.sidebar.caption("Percentuale di dipendenti attivi per ogni giorno")
-
-# Valori CONFERMATI: quelli effettivamente usati dall'algoritmo.
-# Restano invariati finché non si preme "Applica modifiche".
 if "target_pct_confermato" not in st.session_state:
     st.session_state.target_pct_confermato = {k: v / 100 for k, v in TARGET_DEFAULT.items()}
+if "pieces_ora" not in st.session_state:
+    st.session_state.pieces_ora = 100
 
-# Slider: modificano valori temporanei, non quelli confermati
-sliders_tmp = {}
-for chiave in GIORNI_CHIAVI:
-    label = {"Dom_P": "Domenica (inizio)", "Dom_S": "Domenica (fine)"}.get(chiave, chiave)
-    valore_corrente = int(round(st.session_state.target_pct_confermato[chiave] * 100))
-    sliders_tmp[chiave] = st.sidebar.slider(label, 0, 100, valore_corrente, key=f"sl_{chiave}")
-
-# Controlla se ci sono modifiche non confermate
-modifiche_pendenti = any(
-    sliders_tmp[k] != int(round(st.session_state.target_pct_confermato[k] * 100))
-    for k in GIORNI_CHIAVI
-)
-
-if modifiche_pendenti:
-    st.sidebar.warning("⚠️ Modifiche non applicate")
-    if st.sidebar.button("✅ Applica modifiche percentuali", type="primary", use_container_width=True):
-        st.session_state.target_pct_confermato = {k: v / 100 for k, v in sliders_tmp.items()}
-        st.rerun()
-    if st.sidebar.button("↩️ Annulla modifiche", use_container_width=True):
-        st.rerun()
-
-# target_pct usato da tutto il resto dell'app = valori CONFERMATI
 target_pct = st.session_state.target_pct_confermato
+pieces_ora = st.session_state.pieces_ora
 
 
 # ─────────────────────────────────────────────
 # TABS PRINCIPALI
 # ─────────────────────────────────────────────
-tab_turni, tab_anagrafica = st.tabs(["📅 Turni Settimanali", "📋 Gestione Anagrafica"])
+tab_turni, tab_anagrafica, tab_parametri = st.tabs(
+    ["📅 Turni Settimanali", "📋 Gestione Anagrafica", "⚙️ Parametri"]
+)
 
 # ══════════════════════════════════════════════
 # SCHEDA — TURNI SETTIMANALI
@@ -830,8 +813,79 @@ with tab_turni:
                         st.success("♻️ Modifiche manuali rimosse, settimana rigenerata.")
                         st.rerun()
 
-                st.write("**Vista Colorata:**")
-                st.dataframe(df_modificato.style.map(colora_celle), use_container_width=True)
+                st.write("**Vista Colorata (formato stampa):**")
+
+                giorni_vista = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
+                nomi_giorni_vista = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"]
+
+                def fmt_orario_vista(val):
+                    if val == "06:00-13:00":
+                        return "6-13", "mattino"
+                    if val == "12:30-19:30":
+                        return "12.30-19.30", "pomeriggio"
+                    if val == "13:00-20:00":
+                        return "13-20", "pomeriggio"
+                    return None, None
+
+                vista_data = {"Dipendente": df_modificato["Dipendente"].tolist()}
+                fascia_map = {}  # col_name -> list of "mattino"/"pomeriggio"/"assente"/None
+                for chiave, nome_g in zip(giorni_vista, nomi_giorni_vista):
+                    data_g = lun_w + datetime.timedelta(days=OFFSETS[GIORNI_CHIAVI.index(chiave)])
+                    col_m = f"{nome_g} {data_g.day} ☀️"
+                    col_p = f"{nome_g} {data_g.day} 🌙"
+                    vals_m, vals_p = [], []
+                    fascia_m, fascia_p = [], []
+                    for val in df_modificato[chiave]:
+                        val = str(val)
+                        if val in ASSENTE:
+                            vals_m.append(val); vals_p.append(val)
+                            fascia_m.append("assente"); fascia_p.append("assente")
+                        else:
+                            txt, fascia = fmt_orario_vista(val)
+                            if fascia == "mattino":
+                                vals_m.append(txt); vals_p.append("")
+                                fascia_m.append("mattino"); fascia_p.append(None)
+                            elif fascia == "pomeriggio":
+                                vals_m.append(""); vals_p.append(txt)
+                                fascia_m.append(None); fascia_p.append("pomeriggio")
+                            else:
+                                vals_m.append(val); vals_p.append("")
+                                fascia_m.append(None); fascia_p.append(None)
+                    vista_data[col_m] = vals_m
+                    vista_data[col_p] = vals_p
+                    fascia_map[col_m] = fascia_m
+                    fascia_map[col_p] = fascia_p
+
+                df_vista = pd.DataFrame(vista_data)
+
+                palette_vista = {
+                    "assente_RIPOSO":   "background-color:#f2f2f2;color:#7f7f7f;font-weight:bold;",
+                    "assente_FERIE":    "background-color:#ffe6cc;color:#cc6600;font-weight:bold;",
+                    "assente_MALATTIA": "background-color:#ffcccc;color:#cc0000;font-weight:bold;",
+                    "assente_PERMESSO": "background-color:#e6f2ff;color:#0066cc;font-weight:bold;",
+                    "mattino": "background-color:#e6ffed;color:#1a7f37;font-weight:bold;",
+                    "pomeriggio": "background-color:#fbefff;color:#8250df;font-weight:bold;",
+                }
+
+                def stile_colonna(col):
+                    name = col.name
+                    out = []
+                    for i, v in enumerate(col):
+                        f = fascia_map.get(name, [None]*len(col))[i]
+                        if f == "assente":
+                            out.append(palette_vista[f"assente_{v}"])
+                        elif f in ("mattino", "pomeriggio"):
+                            out.append(palette_vista[f])
+                        else:
+                            out.append("")
+                    return out
+
+                st.dataframe(
+                    df_vista.style.apply(stile_colonna, subset=[c for c in df_vista.columns if c != "Dipendente"]),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
 
                 st.write("**Stima Volumi Giornalieri:**")
                 report = []
@@ -915,3 +969,46 @@ with tab_anagrafica:
                     st.success(f"❌ {nome_da_el} rimosso.")
                     st.rerun()
 
+
+# ══════════════════════════════════════════════
+# SCHEDA — PARAMETRI
+# ══════════════════════════════════════════════
+with tab_parametri:
+    st.subheader("⚙️ Parametri Operativi")
+
+    nuovo_pieces = st.number_input(
+        "Pezzi/Ora (Default):",
+        value=st.session_state.pieces_ora, min_value=1, key="pieces_ora_input"
+    )
+    if nuovo_pieces != st.session_state.pieces_ora:
+        st.session_state.pieces_ora = nuovo_pieces
+        st.rerun()
+
+    st.divider()
+    st.subheader("🎯 Forza Lavoro Richiesta (%)")
+    st.caption("Percentuale di dipendenti attivi per ogni giorno. Le modifiche richiedono conferma esplicita.")
+
+    sliders_tmp = {}
+    col_a, col_b = st.columns(2)
+    cols_cycle = [col_a, col_b]
+    for idx_g, chiave in enumerate(GIORNI_CHIAVI):
+        label = {"Dom_P": "Domenica (inizio)", "Dom_S": "Domenica (fine)"}.get(chiave, chiave)
+        valore_corrente = int(round(st.session_state.target_pct_confermato[chiave] * 100))
+        with cols_cycle[idx_g % 2]:
+            sliders_tmp[chiave] = st.slider(label, 0, 100, valore_corrente, key=f"sl_{chiave}")
+
+    modifiche_pendenti = any(
+        sliders_tmp[k] != int(round(st.session_state.target_pct_confermato[k] * 100))
+        for k in GIORNI_CHIAVI
+    )
+
+    if modifiche_pendenti:
+        st.warning("⚠️ Modifiche non applicate")
+        col_app, col_ann = st.columns(2)
+        with col_app:
+            if st.button("✅ Applica modifiche percentuali", type="primary", use_container_width=True):
+                st.session_state.target_pct_confermato = {k: v / 100 for k, v in sliders_tmp.items()}
+                st.rerun()
+        with col_ann:
+            if st.button("↩️ Annulla modifiche", use_container_width=True):
+                st.rerun()
