@@ -298,35 +298,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
                 # Copia esatta — stesso valore della Dom_S settimana scorsa
                 df.at[idx, "Dom_P"] = val_prec
 
-    # ── Riposo FT (un giorno Lun-Sab) ──
-    # Solo per chi LAVORA Dom_P: ha già il riposo domenicale, quindi
-    # gli assegniamo un riposo infrasettimanale.
-    # Chi NON lavora Dom_P: il suo riposo è la domenica stessa, nessun
-    # altro riposo Lun-Sab.
-    for idx, row in df.iterrows():
-        if row["Contratto"] != "FT" or row["_in_ferie"]:
-            continue
-        if all(df.at[idx, k] == "MALATTIA" for k in GIORNI_CHIAVI[1:7]):
-            continue
-        dom_p_val = str(df.at[idx, "Dom_P"])
-        # Riposo infrasettimanale solo se ha lavorato Dom_P
-        if dom_p_val in ASSENTE:
-            continue
-        miglior = None
-        max_sur = -9999
-        for chiave in GIORNI_CHIAVI[1:7]:
-            if df.at[idx, chiave] in ASSENTE:
-                continue
-            lav = (~df[chiave].isin(ASSENTE)).sum()
-            sur = lav - n_totale * target_pct.get(chiave, 0.75)
-            if sur > max_sur:
-                max_sur = sur
-                miglior = chiave
-        if miglior:
-            df.at[idx, miglior] = "RIPOSO"
-
-
-    # ── Riposi PT (dopo Dom_P, così sappiamo se ha lavorato domenica) ──
+    # ── Riposi PT (priorità: giorni fissi rispettati sempre) ──
     # Lavora Dom_P → 2 riposi Lun-Sab (entrambi i giorni fissi) = 5 gg lavoro
     # Non lavora Dom_P → 1 solo riposo Lun-Sab (domenica già bruciata) = 5 gg lavoro
     for idx, row in df.iterrows():
@@ -364,6 +336,35 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
                     if df.at[idx, chiave] not in {"MALATTIA", "FERIE"}:
                         df.at[idx, chiave] = "RIPOSO"
                     break
+
+    # ── Riposo FT (un giorno Lun-Sab, completa dopo i PT) ──
+    # Solo per chi LAVORA Dom_P: ha già il riposo domenicale, quindi
+    # gli assegniamo un riposo infrasettimanale.
+    # Chi NON lavora Dom_P: il suo riposo è la domenica stessa, nessun
+    # altro riposo Lun-Sab.
+    # Calcolato DOPO i riposi PT, così il surplus di copertura riflette
+    # già i giorni fissi liberati dai part-time.
+    for idx, row in df.iterrows():
+        if row["Contratto"] != "FT" or row["_in_ferie"]:
+            continue
+        if all(df.at[idx, k] == "MALATTIA" for k in GIORNI_CHIAVI[1:7]):
+            continue
+        dom_p_val = str(df.at[idx, "Dom_P"])
+        # Riposo infrasettimanale solo se ha lavorato Dom_P
+        if dom_p_val in ASSENTE:
+            continue
+        miglior = None
+        max_sur = -9999
+        for chiave in GIORNI_CHIAVI[1:7]:
+            if df.at[idx, chiave] in ASSENTE:
+                continue
+            lav = (~df[chiave].isin(ASSENTE)).sum()
+            sur = lav - n_totale * target_pct.get(chiave, 0.75)
+            if sur > max_sur:
+                max_sur = sur
+                miglior = chiave
+        if miglior:
+            df.at[idx, miglior] = "RIPOSO"
 
     # ── Dom_S: rotazione rispetto a Dom_P della STESSA settimana ──
     for idx, row in df.iterrows():
@@ -419,10 +420,36 @@ pieces_ora = st.sidebar.number_input("Pezzi/Ora (Default):", value=100, min_valu
 st.sidebar.divider()
 st.sidebar.subheader("🎯 Forza Lavoro Richiesta (%)")
 st.sidebar.caption("Percentuale di dipendenti attivi per ogni giorno")
-target_pct = {}
+
+# Valori CONFERMATI: quelli effettivamente usati dall'algoritmo.
+# Restano invariati finché non si preme "Applica modifiche".
+if "target_pct_confermato" not in st.session_state:
+    st.session_state.target_pct_confermato = {k: v / 100 for k, v in TARGET_DEFAULT.items()}
+
+# Slider: modificano valori temporanei, non quelli confermati
+sliders_tmp = {}
 for chiave in GIORNI_CHIAVI:
     label = {"Dom_P": "Domenica (inizio)", "Dom_S": "Domenica (fine)"}.get(chiave, chiave)
-    target_pct[chiave] = st.sidebar.slider(label, 0, 100, TARGET_DEFAULT[chiave], key=f"sl_{chiave}") / 100
+    valore_corrente = int(round(st.session_state.target_pct_confermato[chiave] * 100))
+    sliders_tmp[chiave] = st.sidebar.slider(label, 0, 100, valore_corrente, key=f"sl_{chiave}")
+
+# Controlla se ci sono modifiche non confermate
+modifiche_pendenti = any(
+    sliders_tmp[k] != int(round(st.session_state.target_pct_confermato[k] * 100))
+    for k in GIORNI_CHIAVI
+)
+
+if modifiche_pendenti:
+    st.sidebar.warning("⚠️ Modifiche non applicate")
+    if st.sidebar.button("✅ Applica modifiche percentuali", type="primary", use_container_width=True):
+        st.session_state.target_pct_confermato = {k: v / 100 for k, v in sliders_tmp.items()}
+        st.rerun()
+    if st.sidebar.button("↩️ Annulla modifiche", use_container_width=True):
+        st.rerun()
+
+# target_pct usato da tutto il resto dell'app = valori CONFERMATI
+target_pct = st.session_state.target_pct_confermato
+
 
 # ─────────────────────────────────────────────
 # TABS PRINCIPALI
