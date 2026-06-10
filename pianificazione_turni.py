@@ -158,7 +158,7 @@ def calcola_domeniche_precedenti(week_target, anno_target):
         for _, row in df_prec.iterrows():
             nome = row.get("Dipendente")
             if nome:
-                risultato[nome] = str(row.get("Dom_S", "RIPOSO")) not in ASSENTE
+                risultato[nome] = str(row.get("Dom_S", "RIPOSO"))
     return risultato
 
 # ─────────────────────────────────────────────
@@ -286,13 +286,12 @@ def genera_tabellone(week_num, anno, lunedi, dom_precedenti, target_pct):
         elif in_ferie:
             df.at[idx, "Dom_P"] = "06:00-13:00"
         else:
-            ha_lav = dom_precedenti.get(row["Dipendente"], None)
-            if ha_lav is None:
+            val_dom_prec = dom_precedenti.get(row["Dipendente"], None)
+            if val_dom_prec is None:
                 df.at[idx, "Dom_P"] = "06:00-13:00"
-            elif ha_lav:
-                df.at[idx, "Dom_P"] = "RIPOSO"
             else:
-                df.at[idx, "Dom_P"] = "06:00-13:00"
+                # Copia esatta del valore Dom_S della settimana precedente
+                df.at[idx, "Dom_P"] = val_dom_prec
 
     for idx, row in df.iterrows():
         dip = dip_map[row["Dipendente"]]
@@ -482,13 +481,17 @@ with tab_turni:
                     dom_prec_bool = calcola_domeniche_precedenti(week_w, anno_w)
 
             if df_salvato is not None:
-                # Usa dati salvati ma FORZA Dom_P coerente con la catena
+                # Usa dati salvati ma FORZA Dom_P = copia esatta Dom_S settimana precedente
                 df_chain = df_salvato.copy()
-                for ridx, rrow in df_chain.iterrows():
-                    nome = rrow.get("Dipendente")
-                    if nome and nome in dom_prec_bool:
-                        ha_lav = dom_prec_bool[nome]
-                        df_chain.at[ridx, "Dom_P"] = "RIPOSO" if ha_lav else "06:00-13:00"
+                if j > 0:
+                    anno_pw, week_pw, _ = settimane[j - 1]
+                    df_prec = tabelloni.get((anno_pw, week_pw))
+                    if df_prec is not None and "Dom_S" in df_prec.columns:
+                        dom_s_map = df_prec.set_index("Dipendente")["Dom_S"].to_dict()
+                        for ridx, rrow in df_chain.iterrows():
+                            nome = rrow.get("Dipendente")
+                            if nome and nome in dom_s_map:
+                                df_chain.at[ridx, "Dom_P"] = dom_s_map[nome]
             else:
                 df_chain = genera_tabellone(week_w, anno_w, lun_w, dom_prec_bool, target_pct)
 
