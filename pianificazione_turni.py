@@ -57,6 +57,9 @@ def colora_celle(valore):
 def file_settimana(anno, week):
     return f"Turni_W{week:02d}_{anno}.csv"
 
+def file_modifiche(anno, week):
+    return f"Modifiche_W{week:02d}_{anno}.csv"
+
 def is_definitiva(anno, week):
     fname = file_settimana(anno, week)
     if not os.path.exists(fname):
@@ -64,6 +67,16 @@ def is_definitiva(anno, week):
     try:
         df = pd.read_csv(fname, nrows=1)
         return bool(df.get("_definitiva", pd.Series([False]))[0])
+    except Exception:
+        return False
+
+def ha_modifiche_manuali(anno, week):
+    fname = file_modifiche(anno, week)
+    if not os.path.exists(fname):
+        return False
+    try:
+        df = pd.read_csv(fname)
+        return len(df) > 0
     except Exception:
         return False
 
@@ -81,6 +94,66 @@ def carica_settimana(anno, week):
         df = df.drop(columns=["_definitiva"])
     return df
 
+def carica_modifiche(anno, week):
+    """Restituisce dict {(nome, colonna): valore} delle modifiche manuali salvate."""
+    fname = file_modifiche(anno, week)
+    if not os.path.exists(fname):
+        return {}
+    try:
+        df = pd.read_csv(fname)
+        return {
+            (row["Dipendente"], row["Colonna"]): row["Valore"]
+            for _, row in df.iterrows()
+        }
+    except Exception:
+        return {}
+
+def salva_modifiche(modifiche_dict, anno, week):
+    """modifiche_dict: {(nome, colonna): valore}"""
+    if not modifiche_dict:
+        fname = file_modifiche(anno, week)
+        if os.path.exists(fname):
+            os.remove(fname)
+        return
+    rows = [{"Dipendente": n, "Colonna": c, "Valore": v} for (n, c), v in modifiche_dict.items()]
+    pd.DataFrame(rows).to_csv(file_modifiche(anno, week), index=False)
+
+def calcola_modifiche(df_originale, df_attuale, colonne_assenza_only=None):
+    """
+    Confronta df_attuale con df_originale (generato dall'algoritmo) e
+    restituisce dict {(nome, colonna): valore} per le celle diverse.
+    Se colonne_assenza_only è True, considera solo modifiche che impostano
+    valori in ASSENTE (MALATTIA/FERIE/PERMESSO) o che rimuovono tali valori.
+    """
+    modifiche = {}
+    cols = [c for c in GIORNI_CHIAVI]
+    orig_idx = df_originale.set_index("Dipendente")
+    att_idx = df_attuale.set_index("Dipendente")
+    for nome in att_idx.index:
+        if nome not in orig_idx.index:
+            continue
+        for col in cols:
+            v_att = att_idx.at[nome, col]
+            v_orig = orig_idx.at[nome, col]
+            if str(v_att) != str(v_orig):
+                if colonne_assenza_only:
+                    if str(v_att) in ASSENTE or str(v_orig) in ASSENTE:
+                        modifiche[(nome, col)] = v_att
+                else:
+                    modifiche[(nome, col)] = v_att
+    return modifiche
+
+def applica_modifiche(df, modifiche_dict):
+    """Applica le modifiche manuali sopra il df generato dall'algoritmo."""
+    if not modifiche_dict:
+        return df
+    df = df.copy()
+    df_idx = df.set_index("Dipendente")
+    for (nome, col), val in modifiche_dict.items():
+        if nome in df_idx.index and col in df_idx.columns:
+            df_idx.at[nome, col] = val
+    return df_idx.reset_index()
+
 def parse_data_malattia(val):
     if val is None:
         return None
@@ -89,6 +162,7 @@ def parse_data_malattia(val):
         return None if pd.isnull(parsed) else parsed.date()
     except Exception:
         return None
+
 
 # ─────────────────────────────────────────────
 # INIT ANAGRAFICA
@@ -353,7 +427,198 @@ for chiave in GIORNI_CHIAVI:
 # ─────────────────────────────────────────────
 # TABS PRINCIPALI
 # ─────────────────────────────────────────────
-tab_anagrafica, tab_turni = st.tabs(["📋 Gestione Anagrafica", "📅 Turni Settimanali"])
+tab_turni, tab_anagrafica = st.tabs(["📅 Turni Settimanali", "📋 Gestione Anagrafica"])
+
+# ══════════════════════════════════════════════
+# SCHEDA — TURNI SETTIMANALI
+# ══════════════════════════════════════════════
+with tab_turni:
+    if st.session_state.df_anagrafica.empty:
+        st.warning("⚠️ Aggiungi prima i dipendenti nell'Anagrafica.")
+    else:
+        # ── Costruisci labels (con indicatore modifiche manuali) ──
+        labels_week = []
+        for anno_w, week_w, lun_w in settimane:
+            dom_p = lun_w - datetime.timedelta(days=1)
+            dom_s = lun_w + datetime.timedelta(days=6)
+            flag  = "🔒" if is_definitiva(anno_w, week_w) else "📝"
+            mod   = "✏️" if ha_modifiche_manuali(anno_w, week_w) else ""
+            cur   = " ◀" if (anno_w == anno_corrente and week_w == week_corrente) else ""
+            labels_week.append(f"{flag}{mod} W{week_w} ({dom_p.day}/{dom_p.month}–{dom_s.day}/{dom_s.month}){cur}")
+
+        # ── Pre-genera la catena completa ──
+        # Per ogni settimana: genera il tabellone "pulito" (senza modifiche manuali),
+        # poi applica sopra le eventuali modifiche manuali salvate.
+        # dom_s_map per la catena usa SEMPRE il tabellone con modifiche applicate,
+        # cosi' la propagazione tiene conto di quello che l'utente ha effettivamente deciso.
+        tabelloni = {}        # (anno, week) -> df CON modifiche applicate (quello mostrato)
+        tabelloni_puliti = {} # (anno, week) -> df SENZA modifiche (output puro algoritmo)
+
+        for j, (anno_w, week_w, lun_w) in enumerate(settimane):
+            # dom_s_map dalla settimana precedente nella catena (con modifiche)
+            if j == 0:
+                dom_s_map = leggi_dom_s_precedente(week_w, anno_w)
+            else:
+                anno_pw, week_pw, _ = settimane[j - 1]
+                df_prec = tabelloni.get((anno_pw, week_pw))
+                if df_prec is not None and "Dom_S" in df_prec.columns:
+                    dom_s_map = {
+                        rrow["Dipendente"]: str(rrow["Dom_S"])
+                        for _, rrow in df_prec.iterrows()
+                        if rrow.get("Dipendente")
+                    }
+                else:
+                    dom_s_map = leggi_dom_s_precedente(week_w, anno_w)
+
+            definitiva_w = is_definitiva(anno_w, week_w)
+            df_salvato = carica_settimana(anno_w, week_w)
+            modifiche = carica_modifiche(anno_w, week_w)
+
+            if definitiva_w and df_salvato is not None:
+                # DEFINITIVA: usa esattamente quanto salvato, nessun ricalcolo.
+                # Forza comunque Dom_P coerente con la catena (propagazione domeniche).
+                df_pulito = df_salvato.copy()
+                for ridx, rrow in df_pulito.iterrows():
+                    nome = rrow.get("Dipendente")
+                    if nome:
+                        val = dom_s_map.get(nome, None)
+                        if val is not None:
+                            df_pulito.at[ridx, "Dom_P"] = val
+                df_con_mod = df_pulito.copy()
+            else:
+                # PROVVISORIA (salvata o no): rigenera da zero con l'algoritmo,
+                # poi applica le modifiche manuali sopra.
+                df_pulito = genera_tabellone(week_w, anno_w, lun_w, dom_s_map, target_pct)
+                df_con_mod = applica_modifiche(df_pulito, modifiche)
+
+            tabelloni_puliti[(anno_w, week_w)] = df_pulito
+            tabelloni[(anno_w, week_w)] = df_con_mod
+
+        # ── Renderizza i tab ──
+        tabs_week = st.tabs(labels_week)
+
+        for i, (t_week, (anno_w, week_w, lun_w)) in enumerate(zip(tabs_week, settimane)):
+            with t_week:
+                col_labels = {}
+                rinomina_exp = {}
+                for chiave, label, offset in zip(GIORNI_CHIAVI, GIORNI_LABELS, OFFSETS):
+                    data_g = lun_w + datetime.timedelta(days=offset)
+                    lbl = f"{label} {data_g.day}/{data_g.month}"
+                    col_labels[chiave] = lbl
+                    rinomina_exp[chiave] = lbl
+
+                definitiva = is_definitiva(anno_w, week_w)
+                df_calcolato = tabelloni[(anno_w, week_w)].copy()
+                ha_mod = ha_modifiche_manuali(anno_w, week_w)
+
+                if definitiva:
+                    config_turni = {
+                        chiave: st.column_config.SelectboxColumn(
+                            col_labels[chiave],
+                            options=OPZIONI_TURNO,
+                            disabled=(chiave == "Dom_P")
+                        )
+                        for chiave in GIORNI_CHIAVI
+                    }
+                    msg = "🔒 **Settimana DEFINITIVA** — consegnata. Puoi modificare solo MALATTIA/FERIE/PERMESSO; gli orari altrui non cambiano."
+                    if ha_mod:
+                        msg += "  \n✏️ *Sono presenti modifiche manuali rispetto alla generazione originale.*"
+                    st.success(msg)
+                else:
+                    config_turni = {
+                        chiave: st.column_config.SelectboxColumn(
+                            col_labels[chiave],
+                            options=OPZIONI_TURNO,
+                            disabled=(chiave == "Dom_P" and i > 0)
+                        )
+                        for chiave in GIORNI_CHIAVI
+                    }
+                    msg = "📝 **Settimana PROVVISORIA** — generata automaticamente, si adatta a malattie/ferie/permessi inseriti."
+                    if ha_mod:
+                        msg += "  \n✏️ *Sono presenti modifiche manuali, riapplicate ad ogni rigenerazione.*"
+                    st.info(msg)
+
+                df_modificato = st.data_editor(
+                    df_calcolato,
+                    column_config=config_turni,
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"editor_{anno_w}_{week_w}"
+                )
+
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if not definitiva:
+                        if st.button("🔒 Blocca come Definitiva", type="primary",
+                                     use_container_width=True, key=f"blocca_{anno_w}_{week_w}"):
+                            salva_settimana(df_modificato, anno_w, week_w, definitiva=True)
+                            st.success("✅ Bloccata!")
+                            st.rerun()
+                    else:
+                        if st.button("🔓 Sblocca (torna Provvisoria)", type="secondary",
+                                     use_container_width=True, key=f"sblocca_{anno_w}_{week_w}"):
+                            salva_settimana(df_modificato, anno_w, week_w, definitiva=False)
+                            st.success("↩️ Sbloccata!")
+                            st.rerun()
+                with col2:
+                    if st.button("💾 Salva Modifiche", use_container_width=True,
+                                 key=f"salva_{anno_w}_{week_w}"):
+                        if definitiva:
+                            # Salva il file intero così com'è (orari fissi + assenze modificate)
+                            salva_settimana(df_modificato, anno_w, week_w, definitiva=True)
+                            # Traccia comunque le modifiche di assenza per il badge
+                            df_pulito = tabelloni_puliti[(anno_w, week_w)]
+                            mod = calcola_modifiche(df_pulito, df_modificato, colonne_assenza_only=True)
+                            salva_modifiche(mod, anno_w, week_w)
+                        else:
+                            # Calcola il diff rispetto al tabellone "pulito" (algoritmo puro)
+                            df_pulito = tabelloni_puliti[(anno_w, week_w)]
+                            mod = calcola_modifiche(df_pulito, df_modificato, colonne_assenza_only=False)
+                            salva_modifiche(mod, anno_w, week_w)
+                            # Salva anche il risultato corrente (per coerenza catena domeniche)
+                            salva_settimana(df_modificato, anno_w, week_w, definitiva=False)
+                        st.success("✅ Salvato!")
+                        st.rerun()
+                with col3:
+                    df_exp = df_modificato.copy()
+                    df_exp.rename(columns=rinomina_exp, inplace=True)
+                    xlsx_cols = ["Dipendente", "Contratto", "Squadra"] + list(rinomina_exp.values())
+                    df_exp = df_exp[[c for c in xlsx_cols if c in df_exp.columns]]
+                    csv_data = df_exp.to_csv(index=False, sep=";").encode("utf-8-sig")
+                    st.download_button(
+                        label="📥 Esporta CSV",
+                        data=csv_data,
+                        file_name=f"Turni_W{week_w}_{anno_w}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        key=f"down_{anno_w}_{week_w}"
+                    )
+
+                if not definitiva and ha_mod:
+                    if st.button("🗑️ Rimuovi modifiche manuali (rigenera da zero)",
+                                 use_container_width=True, key=f"reset_mod_{anno_w}_{week_w}"):
+                        salva_modifiche({}, anno_w, week_w)
+                        if os.path.exists(file_settimana(anno_w, week_w)):
+                            os.remove(file_settimana(anno_w, week_w))
+                        st.success("♻️ Modifiche manuali rimosse, settimana rigenerata.")
+                        st.rerun()
+
+                st.write("**Vista Colorata:**")
+                st.dataframe(df_modificato.style.map(colora_celle), use_container_width=True)
+
+                st.write("**Stima Volumi Giornalieri:**")
+                report = []
+                for chiave in GIORNI_CHIAVI:
+                    op_m = (df_modificato[chiave] == "06:00-13:00").sum()
+                    op_p = (df_modificato[chiave].isin(["12:30-19:30", "13:00-20:00"])).sum()
+                    report.append({
+                        "Giorno": col_labels[chiave],
+                        "Mattina (06-13)": int(op_m),
+                        "Pomeriggio": int(op_p),
+                        "Tot. Operatori": int(op_m + op_p),
+                        "Pezzi Stimati": int((op_m + op_p) * 7 * pieces_ora),
+                    })
+                st.dataframe(pd.DataFrame(report).set_index("Giorno").T, use_container_width=True)
 
 # ══════════════════════════════════════════════
 # SCHEDA 1 — ANAGRAFICA
@@ -423,143 +688,3 @@ with tab_anagrafica:
                     st.success(f"❌ {nome_da_el} rimosso.")
                     st.rerun()
 
-# ══════════════════════════════════════════════
-# SCHEDA 2 — TURNI
-# ══════════════════════════════════════════════
-with tab_turni:
-    if st.session_state.df_anagrafica.empty:
-        st.warning("⚠️ Aggiungi prima i dipendenti nell'Anagrafica.")
-    else:
-        # ── Costruisci labels ──
-        labels_week = []
-        for anno_w, week_w, lun_w in settimane:
-            dom_p = lun_w - datetime.timedelta(days=1)
-            dom_s = lun_w + datetime.timedelta(days=6)
-            flag  = "🔒" if is_definitiva(anno_w, week_w) else "📝"
-            cur   = " ◀" if (anno_w == anno_corrente and week_w == week_corrente) else ""
-            labels_week.append(f"{flag} W{week_w} ({dom_p.day}/{dom_p.month}–{dom_s.day}/{dom_s.month}){cur}")
-
-        # ── Pre-genera la catena completa ──
-        # dom_s_map: nome -> valore stringa Dom_S della settimana precedente
-        tabelloni = {}
-
-        for j, (anno_w, week_w, lun_w) in enumerate(settimane):
-            # Ricava dom_s_map dalla settimana precedente nella catena
-            if j == 0:
-                dom_s_map = leggi_dom_s_precedente(week_w, anno_w)
-            else:
-                anno_pw, week_pw, _ = settimane[j - 1]
-                df_prec = tabelloni.get((anno_pw, week_pw))
-                if df_prec is not None and "Dom_S" in df_prec.columns:
-                    dom_s_map = {
-                        rrow["Dipendente"]: str(rrow["Dom_S"])
-                        for _, rrow in df_prec.iterrows()
-                        if rrow.get("Dipendente")
-                    }
-                else:
-                    dom_s_map = leggi_dom_s_precedente(week_w, anno_w)
-
-            df_salvato = carica_settimana(anno_w, week_w)
-            if df_salvato is not None:
-                df_chain = df_salvato.copy()
-                # Forza Dom_P = copia esatta Dom_S settimana precedente
-                for ridx, rrow in df_chain.iterrows():
-                    nome = rrow.get("Dipendente")
-                    if nome:
-                        val = dom_s_map.get(nome, None)
-                        if val is not None:
-                            df_chain.at[ridx, "Dom_P"] = val
-            else:
-                df_chain = genera_tabellone(week_w, anno_w, lun_w, dom_s_map, target_pct)
-
-            tabelloni[(anno_w, week_w)] = df_chain
-
-        # ── Renderizza i tab ──
-        tabs_week = st.tabs(labels_week)
-
-        for i, (t_week, (anno_w, week_w, lun_w)) in enumerate(zip(tabs_week, settimane)):
-            with t_week:
-                col_labels = {}
-                rinomina_exp = {}
-                for chiave, label, offset in zip(GIORNI_CHIAVI, GIORNI_LABELS, OFFSETS):
-                    data_g = lun_w + datetime.timedelta(days=offset)
-                    lbl = f"{label} {data_g.day}/{data_g.month}"
-                    col_labels[chiave] = lbl
-                    rinomina_exp[chiave] = lbl
-
-                config_turni = {
-                    chiave: st.column_config.SelectboxColumn(
-                        col_labels[chiave],
-                        options=OPZIONI_TURNO,
-                        disabled=(chiave == "Dom_P" and i > 0)
-                    )
-                    for chiave in GIORNI_CHIAVI
-                }
-
-                definitiva = is_definitiva(anno_w, week_w)
-                df_calcolato = tabelloni[(anno_w, week_w)].copy()
-
-                if definitiva:
-                    st.success("🔒 **Settimana DEFINITIVA**")
-                else:
-                    st.info("📝 **Settimana PROVVISORIA** — generata automaticamente")
-
-                df_modificato = st.data_editor(
-                    df_calcolato,
-                    column_config=config_turni,
-                    use_container_width=True,
-                    hide_index=True,
-                    key=f"editor_{anno_w}_{week_w}"
-                )
-
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    if not definitiva:
-                        if st.button("🔒 Blocca come Definitiva", type="primary",
-                                     use_container_width=True, key=f"blocca_{anno_w}_{week_w}"):
-                            salva_settimana(df_modificato, anno_w, week_w, definitiva=True)
-                            st.success("✅ Bloccata!")
-                            st.rerun()
-                    else:
-                        if st.button("🔓 Sblocca", type="secondary",
-                                     use_container_width=True, key=f"sblocca_{anno_w}_{week_w}"):
-                            salva_settimana(df_modificato, anno_w, week_w, definitiva=False)
-                            st.success("↩️ Sbloccata!")
-                            st.rerun()
-                with col2:
-                    if st.button("💾 Salva Modifiche", use_container_width=True,
-                                 key=f"salva_{anno_w}_{week_w}"):
-                        salva_settimana(df_modificato, anno_w, week_w, definitiva=definitiva)
-                        st.success("✅ Salvato!")
-                        st.rerun()
-                with col3:
-                    df_exp = df_modificato.copy()
-                    df_exp.rename(columns=rinomina_exp, inplace=True)
-                    xlsx_cols = ["Dipendente", "Contratto", "Squadra"] + list(rinomina_exp.values())
-                    df_exp = df_exp[[c for c in xlsx_cols if c in df_exp.columns]]
-                    csv_data = df_exp.to_csv(index=False, sep=";").encode("utf-8-sig")
-                    st.download_button(
-                        label="📥 Esporta CSV",
-                        data=csv_data,
-                        file_name=f"Turni_W{week_w}_{anno_w}.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                        key=f"down_{anno_w}_{week_w}"
-                    )
-
-                st.write("**Vista Colorata:**")
-                st.dataframe(df_modificato.style.map(colora_celle), use_container_width=True)
-
-                st.write("**Stima Volumi Giornalieri:**")
-                report = []
-                for chiave in GIORNI_CHIAVI:
-                    op_m = (df_modificato[chiave] == "06:00-13:00").sum()
-                    op_p = (df_modificato[chiave].isin(["12:30-19:30", "13:00-20:00"])).sum()
-                    report.append({
-                        "Giorno": col_labels[chiave],
-                        "Mattina (06-13)": int(op_m),
-                        "Pomeriggio": int(op_p),
-                        "Tot. Operatori": int(op_m + op_p),
-                        "Pezzi Stimati": int((op_m + op_p) * 7 * pieces_ora),
-                    })
-                st.dataframe(pd.DataFrame(report).set_index("Giorno").T, use_container_width=True)
