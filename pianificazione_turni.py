@@ -14,12 +14,12 @@ st.set_page_config(page_title="Pianificazione Turni - COF", layout="wide")
 st.markdown("""
     <style>
         .block-container {
-            padding-top: 1rem;
+            padding-top: 2.5rem;
             padding-bottom: 1rem;
         }
     </style>
 """, unsafe_allow_html=True)
-st.markdown("### 📦 Pianificazione Mensile Reparto E-commerce")
+st.markdown("### Pianificazione Trimestrale Reparto E-commerce")
 
 # ─────────────────────────────────────────────
 # COSTANTI
@@ -738,13 +738,37 @@ with tab_turni:
                         msg += "  \n✏️ *Sono presenti modifiche manuali, riapplicate ad ogni rigenerazione.*"
                     st.info(msg)
 
-                df_modificato = st.data_editor(
-                    df_calcolato,
-                    column_config=config_turni,
-                    use_container_width=True,
-                    hide_index=True,
-                    key=f"editor_{anno_w}_{week_w}"
-                )
+                col_sticker, col_editor = st.columns([1, 30])
+                with col_sticker:
+                    st.markdown(f"""
+                        <div style="
+                            writing-mode: vertical-rl;
+                            transform: rotate(180deg);
+                            background-color: #2E7D32;
+                            color: white;
+                            font-weight: bold;
+                            font-size: 0.9rem;
+                            letter-spacing: 2px;
+                            border-radius: 6px;
+                            padding: 8px 4px;
+                            text-align: center;
+                            height: 100%;
+                            min-height: 200px;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                        ">
+                            WEEK {week_w}
+                        </div>
+                    """, unsafe_allow_html=True)
+                with col_editor:
+                    df_modificato = st.data_editor(
+                        df_calcolato,
+                        column_config=config_turni,
+                        use_container_width=True,
+                        hide_index=True,
+                        key=f"editor_{anno_w}_{week_w}"
+                    )
 
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
