@@ -61,7 +61,7 @@ def colora_celle(valore):
     if "12:30" in v or "13:00" in v: return "background-color:#fbefff;color:#8250df;"
     return ""
 
-def genera_pdf_settimana(df, week_num, lun_w, col_labels):
+def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
     """
     Genera un PDF: una riga per dipendente, due colonne per ogni giorno
     Lun-Dom: colonna sinistra = turno MATTINO (6-13), colonna destra =
@@ -72,21 +72,44 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=landscape(A4),
-        leftMargin=8*mm, rightMargin=8*mm, topMargin=10*mm, bottomMargin=10*mm
+        leftMargin=4*mm, rightMargin=4*mm, topMargin=6*mm, bottomMargin=6*mm
     )
 
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         "TitoloWeek", parent=styles["Heading1"],
-        fontSize=18, textColor=colors.HexColor("#2E7D32"), spaceAfter=4
+        fontSize=22, textColor=colors.HexColor("#2E7D32"), spaceAfter=2
+    )
+    status_style_def = ParagraphStyle(
+        "StatusDefinitivo", parent=styles["Normal"],
+        fontSize=13, textColor=colors.HexColor("#2E7D32"), fontName="Helvetica-Bold", spaceAfter=6
+    )
+    status_style_prov = ParagraphStyle(
+        "StatusProvvisorio", parent=styles["Normal"],
+        fontSize=13, textColor=colors.HexColor("#CC6600"), fontName="Helvetica-Bold", spaceAfter=6
     )
 
     giorni_pdf = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
     nomi_giorni_pdf = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"]
 
+    NOMI_MESI = ["", "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+                 "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"]
+
+    dom_p_data = lun_w - datetime.timedelta(days=1)
+    dom_s_data = lun_w + datetime.timedelta(days=6)
+    if dom_p_data.month == dom_s_data.month:
+        periodo = f"dal {dom_p_data.day} al {dom_s_data.day} {NOMI_MESI[dom_s_data.month]}"
+    else:
+        periodo = (f"dal {dom_p_data.day} {NOMI_MESI[dom_p_data.month]} "
+                   f"al {dom_s_data.day} {NOMI_MESI[dom_s_data.month]}")
+
     elementi = []
-    elementi.append(Paragraph(f"WEEK {week_num}", title_style))
-    elementi.append(Spacer(1, 4*mm))
+    elementi.append(Paragraph(f"WEEK {week_num} &nbsp;&nbsp; {periodo}", title_style))
+    if definitiva:
+        elementi.append(Paragraph("DEFINITIVO", status_style_def))
+    else:
+        elementi.append(Paragraph("PROVVISORIO", status_style_prov))
+    elementi.append(Spacer(1, 2*mm))
 
     def fmt_orario(val):
         """Converte '06:00-13:00' -> ('6-13', 'mattino'), '12:30-19:30' -> ('12.30-19.30','pomeriggio'), '13:00-20:00' -> ('13-20','pomeriggio')"""
@@ -141,15 +164,15 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels):
 
     n_cols = len(header1)
     # Colonna mattino piu' stretta, colonna pomeriggio piu' larga (per "12.30-19.30")
-    col_widths = [36*mm]
+    col_widths = [42*mm]
     for _ in giorni_pdf:
-        col_widths += [10*mm, 16*mm]
+        col_widths += [13*mm, 19*mm]
 
     tbl = Table(data_table, colWidths=col_widths, repeatRows=1)
 
     # ── Stile base: tutto bianco/nero, nessuno sfondo scuro generale ──
     style_cmds = [
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("BACKGROUND", (0, 0), (-1, -1), colors.white),
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
@@ -161,7 +184,9 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels):
         ("BOX", (0, 0), (-1, -1), 1.2, colors.black),
         ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
         ("ALIGN", (0, 0), (0, -1), "LEFT"),
-        ("LEFTPADDING", (0, 0), (0, -1), 4),
+        ("LEFTPADDING", (0, 0), (0, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]
 
     # Merge header per ogni giorno (2 colonne)
@@ -189,13 +214,13 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels):
             style_cmds.append(("BACKGROUND", (c1, r_idx), (c2, r_idx), bg))
             style_cmds.append(("TEXTCOLOR", (c1, r_idx), (c2, r_idx), fg))
             style_cmds.append(("FONTNAME", (c1, r_idx), (c2, r_idx), "Helvetica-Bold"))
-            style_cmds.append(("FONTSIZE", (c1, r_idx), (c2, r_idx), 7))
+            style_cmds.append(("FONTSIZE", (c1, r_idx), (c2, r_idx), 9))
         elif kind == "mattino":
             style_cmds.append(("BACKGROUND", (c1, r_idx), (c1, r_idx), colors.HexColor("#E6FFED")))
-            style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), 8))
+            style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), 10))
         elif kind == "pomeriggio":
             style_cmds.append(("BACKGROUND", (c2, r_idx), (c2, r_idx), colors.HexColor("#FBEFFF")))
-            style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), 6.5))
+            style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), 8.5))
 
     # Righe alterne bianco/grigio chiarissimo SOLO dove non c'e' gia' un colore assenza
     for r_idx in range(1, len(data_table)):
@@ -786,7 +811,7 @@ with tab_turni:
                         key=f"down_{anno_w}_{week_w}"
                     )
                 with col4:
-                    pdf_data = genera_pdf_settimana(df_modificato, week_w, lun_w, col_labels)
+                    pdf_data = genera_pdf_settimana(df_modificato, week_w, lun_w, col_labels, definitiva)
                     st.download_button(
                         label="🖨️ Esporta PDF",
                         data=pdf_data,
