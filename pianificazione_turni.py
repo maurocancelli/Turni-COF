@@ -284,7 +284,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_precedenti, target_pct):
         if in_malattia_dom_p:
             df.at[idx, "Dom_P"] = "MALATTIA"
         elif in_ferie:
-            df.at[idx, "Dom_P"] = turno_base(dip["Squadra"], week_num)
+            df.at[idx, "Dom_P"] = "06:00-13:00"
         else:
             ha_lav = dom_precedenti.get(row["Dipendente"], None)
             if ha_lav is None:
@@ -292,7 +292,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_precedenti, target_pct):
             elif ha_lav:
                 df.at[idx, "Dom_P"] = "RIPOSO"
             else:
-                df.at[idx, "Dom_P"] = turno_base(dip["Squadra"], week_num)
+                df.at[idx, "Dom_P"] = "06:00-13:00"
 
     for idx, row in df.iterrows():
         dip = dip_map[row["Dipendente"]]
@@ -309,7 +309,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_precedenti, target_pct):
             if ha_lav_dom_p:
                 df.at[idx, "Dom_S"] = "RIPOSO"
             else:
-                df.at[idx, "Dom_S"] = turno_base(dip["Squadra"], week_num)
+                df.at[idx, "Dom_S"] = "06:00-13:00"
 
     # ── STEP 6: garantisci TARGET_DOM domenica ──
     lav_dom_s = (~df["Dom_S"].isin(ASSENTE)).sum()
@@ -320,8 +320,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_precedenti, target_pct):
         for idx in candidati:
             if da_aggiungere <= 0:
                 break
-            nome_dip = df.at[idx, "Dipendente"]
-            df.at[idx, "Dom_S"] = turno_base(dip_map[nome_dip]["Squadra"], week_num)
+            df.at[idx, "Dom_S"] = "06:00-13:00"
             da_aggiungere -= 1
 
     df = df.drop(columns=["_in_ferie", "_data_mal"])
@@ -461,6 +460,46 @@ with tab_turni:
 
         tabs_week = st.tabs(labels_week)
 
+        # ── Pre-genera tutta la catena PRIMA di renderizzare i tab ──
+        # La Dom_S di ogni settimana alimenta la Dom_P di quella successiva,
+        # garantendo propagazione corretta anche su settimane non salvate.
+        tabelloni = {}  # (anno, week) -> DataFrame
+
+        for j, (anno_w, week_w, lun_w) in enumerate(settimane):
+            df_salvato = carica_settimana(anno_w, week_w)
+
+            if df_salvato is not None:
+                df_chain = df_salvato.copy()
+                # Aggiorna Dom_P dalla catena
+                if j > 0:
+                    anno_pw, week_pw, _ = settimane[j - 1]
+                    df_prec = tabelloni.get((anno_pw, week_pw))
+                    if df_prec is not None and "Dom_S" in df_prec.columns:
+                        dom_s_map = df_prec.set_index("Dipendente")["Dom_S"].to_dict()
+                        for ridx, rrow in df_chain.iterrows():
+                            nome = rrow.get("Dipendente")
+                            if nome and nome in dom_s_map:
+                                df_chain.at[ridx, "Dom_P"] = dom_s_map[nome]
+            else:
+                if j == 0:
+                    dom_prec_bool = calcola_domeniche_precedenti(week_w, anno_w)
+                else:
+                    anno_pw, week_pw, _ = settimane[j - 1]
+                    df_prec = tabelloni.get((anno_pw, week_pw))
+                    if df_prec is not None and "Dom_S" in df_prec.columns:
+                        dom_prec_bool = {
+                            rrow["Dipendente"]: str(rrow["Dom_S"]) not in ASSENTE
+                            for _, rrow in df_prec.iterrows()
+                            if rrow.get("Dipendente")
+                        }
+                    else:
+                        dom_prec_bool = calcola_domeniche_precedenti(week_w, anno_w)
+                df_chain = genera_tabellone(week_w, anno_w, lun_w, dom_prec_bool, target_pct)
+
+            tabelloni[(anno_w, week_w)] = df_chain
+
+        tabs_week = st.tabs(labels_week)
+
         for i, (t_week, (anno_w, week_w, lun_w)) in enumerate(zip(tabs_week, settimane)):
             with t_week:
                 col_labels = {}
@@ -481,31 +520,7 @@ with tab_turni:
                 }
 
                 definitiva = is_definitiva(anno_w, week_w)
-                df_salvato = carica_settimana(anno_w, week_w)
-
-                if df_salvato is not None:
-                    df_calcolato = df_salvato.copy()
-                    if i > 0:
-                        anno_pw, week_pw, _ = settimane[i - 1]
-                        df_prec_w = carica_settimana(anno_pw, week_pw)
-                        if df_prec_w is not None and "Dom_S" in df_prec_w.columns:
-                            dom_s_map = df_prec_w.set_index("Dipendente")["Dom_S"].to_dict()
-                            for idx, row in df_calcolato.iterrows():
-                                nome = row.get("Dipendente")
-                                if nome and nome in dom_s_map:
-                                    df_calcolato.at[idx, "Dom_P"] = dom_s_map[nome]
-                else:
-                    dom_prec_bool = calcola_domeniche_precedenti(week_w, anno_w)
-                    if i > 0:
-                        anno_pw, week_pw, _ = settimane[i - 1]
-                        df_prec_w = carica_settimana(anno_pw, week_pw)
-                        if df_prec_w is not None and "Dom_S" in df_prec_w.columns:
-                            dom_prec_bool = {
-                                row["Dipendente"]: str(row["Dom_S"]) not in ASSENTE
-                                for _, row in df_prec_w.iterrows()
-                                if row.get("Dipendente")
-                            }
-                    df_calcolato = genera_tabellone(week_w, anno_w, lun_w, dom_prec_bool, target_pct)
+                df_calcolato = tabelloni[(anno_w, week_w)]
 
                 if definitiva:
                     st.success("🔒 **Settimana DEFINITIVA** — modificabile ma bloccata")
