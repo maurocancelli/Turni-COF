@@ -209,59 +209,6 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
                 df.at[idx, chiave] = "FERIE"
             else:
                 df.at[idx, chiave] = t_base
-
-    # ── Riposi PT ──
-    for idx, row in df.iterrows():
-        if row["Contratto"] != "PT" or row["_in_ferie"]:
-            continue
-        dip = dip_map[row["Dipendente"]]
-        riposi = [r for r in [dip.get("Riposo 1"), dip.get("Riposo 2")]
-                  if r and r != "Nessuno"]
-        if not riposi:
-            continue
-        val_dom_p = dom_s_prec.get(row["Dipendente"], None)
-        ha_lavorato_dom = val_dom_p is not None and val_dom_p not in ASSENTE
-
-        def target_di(g):
-            for k, off in zip(GIORNI_CHIAVI[1:7], OFFSETS[1:7]):
-                if GIORNI_BASE[off - 1] == g:
-                    return target_pct.get(k, 0.75)
-            return 0.75
-
-        if len(riposi) == 2:
-            t1, t2 = target_di(riposi[0]), target_di(riposi[1])
-            r_prim = riposi[0] if t1 <= t2 else riposi[1]
-            r_sec  = riposi[1] if t1 <= t2 else riposi[0]
-            da_app = [r_prim] if ha_lavorato_dom else [r_prim, r_sec]
-        else:
-            da_app = riposi
-
-        for g in da_app:
-            for chiave, offset in zip(GIORNI_CHIAVI[1:7], OFFSETS[1:7]):
-                if GIORNI_BASE[offset - 1] == g:
-                    if df.at[idx, chiave] not in {"MALATTIA", "FERIE"}:
-                        df.at[idx, chiave] = "RIPOSO"
-                    break
-
-    # ── Riposo FT (un giorno a settimana) ──
-    for idx, row in df.iterrows():
-        if row["Contratto"] != "FT" or row["_in_ferie"]:
-            continue
-        if all(df.at[idx, k] == "MALATTIA" for k in GIORNI_CHIAVI[1:7]):
-            continue
-        miglior = None
-        max_sur = -9999
-        for chiave in GIORNI_CHIAVI[1:7]:
-            if df.at[idx, chiave] in ASSENTE:
-                continue
-            lav = (~df[chiave].isin(ASSENTE)).sum()
-            sur = lav - n_totale * target_pct.get(chiave, 0.75)
-            if sur > max_sur:
-                max_sur = sur
-                miglior = chiave
-        if miglior:
-            df.at[idx, miglior] = "RIPOSO"
-
     # ── Dom_P: copia esatta della Dom_S della settimana precedente ──
     for idx, row in df.iterrows():
         data_mal = row["_data_mal"]
@@ -276,6 +223,73 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             else:
                 # Copia esatta — stesso valore della Dom_S settimana scorsa
                 df.at[idx, "Dom_P"] = val_prec
+
+    # ── Riposo FT (un giorno Lun-Sab) ──
+    # Solo per chi LAVORA Dom_P: ha già il riposo domenicale, quindi
+    # gli assegniamo un riposo infrasettimanale.
+    # Chi NON lavora Dom_P: il suo riposo è la domenica stessa, nessun
+    # altro riposo Lun-Sab.
+    for idx, row in df.iterrows():
+        if row["Contratto"] != "FT" or row["_in_ferie"]:
+            continue
+        if all(df.at[idx, k] == "MALATTIA" for k in GIORNI_CHIAVI[1:7]):
+            continue
+        dom_p_val = str(df.at[idx, "Dom_P"])
+        # Riposo infrasettimanale solo se ha lavorato Dom_P
+        if dom_p_val in ASSENTE:
+            continue
+        miglior = None
+        max_sur = -9999
+        for chiave in GIORNI_CHIAVI[1:7]:
+            if df.at[idx, chiave] in ASSENTE:
+                continue
+            lav = (~df[chiave].isin(ASSENTE)).sum()
+            sur = lav - n_totale * target_pct.get(chiave, 0.75)
+            if sur > max_sur:
+                max_sur = sur
+                miglior = chiave
+        if miglior:
+            df.at[idx, miglior] = "RIPOSO"
+
+
+    # ── Riposi PT (dopo Dom_P, così sappiamo se ha lavorato domenica) ──
+    # Lavora Dom_P → 2 riposi Lun-Sab (entrambi i giorni fissi) = 5 gg lavoro
+    # Non lavora Dom_P → 1 solo riposo Lun-Sab (domenica già bruciata) = 5 gg lavoro
+    for idx, row in df.iterrows():
+        if row["Contratto"] != "PT" or row["_in_ferie"]:
+            continue
+        dip = dip_map[row["Dipendente"]]
+        riposi = [r for r in [dip.get("Riposo 1"), dip.get("Riposo 2")]
+                  if r and r != "Nessuno"]
+        if not riposi:
+            continue
+
+        dom_p_val = str(df.at[idx, "Dom_P"])
+        ha_lavorato_dom = dom_p_val not in ASSENTE
+
+        def target_di(g):
+            for k, off in zip(GIORNI_CHIAVI[1:7], OFFSETS[1:7]):
+                if GIORNI_BASE[off - 1] == g:
+                    return target_pct.get(k, 0.75)
+            return 0.75
+
+        if len(riposi) == 2:
+            t1, t2 = target_di(riposi[0]), target_di(riposi[1])
+            # giorno col target minore = meno necessario = candidato a riposo prioritario
+            r_prim = riposi[0] if t1 <= t2 else riposi[1]
+            r_sec  = riposi[1] if t1 <= t2 else riposi[0]
+            # ha lavorato domenica → 2 riposi infrasettimanali (entrambi i giorni fissi)
+            # non ha lavorato domenica → 1 solo riposo (domenica già bruciata)
+            da_app = [r_prim, r_sec] if ha_lavorato_dom else [r_prim]
+        else:
+            da_app = riposi
+
+        for g in da_app:
+            for chiave, offset in zip(GIORNI_CHIAVI[1:7], OFFSETS[1:7]):
+                if GIORNI_BASE[offset - 1] == g:
+                    if df.at[idx, chiave] not in {"MALATTIA", "FERIE"}:
+                        df.at[idx, chiave] = "RIPOSO"
+                    break
 
     # ── Dom_S: rotazione rispetto a Dom_P della STESSA settimana ──
     for idx, row in df.iterrows():
