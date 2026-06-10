@@ -772,8 +772,8 @@ with tab_turni:
                             min-height: 200px;
                             display: flex;
                             align-items: center;
-                            justify-content: flex-start;
-                            padding-top: 16px;
+                            justify-content: flex-end;
+                            padding-bottom: 16px;
                         ">
                             WEEK {week_w}
                         </div>
