@@ -164,15 +164,15 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
 
     n_cols = len(header1)
     # Colonna mattino piu' stretta, colonna pomeriggio piu' larga (per "12.30-19.30")
-    col_widths = [42*mm]
+    col_widths = [52*mm]
     for _ in giorni_pdf:
-        col_widths += [13*mm, 19*mm]
+        col_widths += [12*mm, 18*mm]
 
     tbl = Table(data_table, colWidths=col_widths, repeatRows=1)
 
     # ── Stile base: tutto bianco/nero, nessuno sfondo scuro generale ──
     style_cmds = [
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("FONTSIZE", (0, 0), (-1, -1), 11),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("BACKGROUND", (0, 0), (-1, -1), colors.white),
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
@@ -214,13 +214,13 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
             style_cmds.append(("BACKGROUND", (c1, r_idx), (c2, r_idx), bg))
             style_cmds.append(("TEXTCOLOR", (c1, r_idx), (c2, r_idx), fg))
             style_cmds.append(("FONTNAME", (c1, r_idx), (c2, r_idx), "Helvetica-Bold"))
-            style_cmds.append(("FONTSIZE", (c1, r_idx), (c2, r_idx), 9))
+            style_cmds.append(("FONTSIZE", (c1, r_idx), (c2, r_idx), 10))
         elif kind == "mattino":
             style_cmds.append(("BACKGROUND", (c1, r_idx), (c1, r_idx), colors.HexColor("#E6FFED")))
-            style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), 10))
+            style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), 11))
         elif kind == "pomeriggio":
             style_cmds.append(("BACKGROUND", (c2, r_idx), (c2, r_idx), colors.HexColor("#FBEFFF")))
-            style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), 8.5))
+            style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), 9.5))
 
     # Righe alterne bianco/grigio chiarissimo SOLO dove non c'e' gia' un colore assenza
     for r_idx in range(1, len(data_table)):
