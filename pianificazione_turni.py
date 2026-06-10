@@ -493,4 +493,99 @@ with tab_turni:
                             if rrow.get("Dipendente")
                         }
                     else:
-      
+                        dom_prec_bool = calcola_domeniche_precedenti(week_w, anno_w)
+                df_chain = genera_tabellone(week_w, anno_w, lun_w, dom_prec_bool, target_pct)
+
+            tabelloni[(anno_w, week_w)] = df_chain
+
+        tabs_week = st.tabs(labels_week)
+
+        for i, (t_week, (anno_w, week_w, lun_w)) in enumerate(zip(tabs_week, settimane)):
+            with t_week:
+                col_labels = {}
+                rinomina_exp = {}
+                for chiave, label, offset in zip(GIORNI_CHIAVI, GIORNI_LABELS, OFFSETS):
+                    data_g = lun_w + datetime.timedelta(days=offset)
+                    lbl = f"{label} {data_g.day}/{data_g.month}"
+                    col_labels[chiave] = lbl
+                    rinomina_exp[chiave] = lbl
+
+                config_turni = {
+                    chiave: st.column_config.SelectboxColumn(
+                        col_labels[chiave],
+                        options=OPZIONI_TURNO,
+                        disabled=(chiave == "Dom_P" and i > 0)
+                    )
+                    for chiave in GIORNI_CHIAVI
+                }
+
+                definitiva = is_definitiva(anno_w, week_w)
+                df_calcolato = tabelloni[(anno_w, week_w)]
+
+                if definitiva:
+                    st.success("🔒 **Settimana DEFINITIVA** — modificabile ma bloccata")
+                else:
+                    st.info("📝 **Settimana PROVVISORIA** — generata automaticamente")
+
+                df_modificato = st.data_editor(
+                    df_calcolato,
+                    column_config=config_turni,
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"editor_{anno_w}_{week_w}"
+                )
+
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    if not definitiva:
+                        if st.button("🔒 Blocca come Definitiva", type="primary",
+                                     use_container_width=True, key=f"blocca_{anno_w}_{week_w}"):
+                            salva_settimana(df_modificato, anno_w, week_w, definitiva=True)
+                            st.success("✅ Settimana bloccata!")
+                            st.rerun()
+                    else:
+                        if st.button("🔓 Sblocca (Provvisoria)", type="secondary",
+                                     use_container_width=True, key=f"sblocca_{anno_w}_{week_w}"):
+                            salva_settimana(df_modificato, anno_w, week_w, definitiva=False)
+                            st.success("↩️ Settimana sbloccata!")
+                            st.rerun()
+
+                with col2:
+                    if st.button("💾 Salva Modifiche", use_container_width=True,
+                                 key=f"salva_{anno_w}_{week_w}"):
+                        salva_settimana(df_modificato, anno_w, week_w, definitiva=definitiva)
+                        st.success("✅ Salvato!")
+                        st.rerun()
+
+                with col3:
+                    df_exp = df_modificato.copy()
+                    df_exp.rename(columns=rinomina_exp, inplace=True)
+                    xlsx_cols = ["Dipendente", "Contratto", "Squadra"] + list(rinomina_exp.values())
+                    df_exp = df_exp[[c for c in xlsx_cols if c in df_exp.columns]]
+                    csv_data = df_exp.to_csv(index=False, sep=";").encode("utf-8-sig")
+                    st.download_button(
+                        label="📥 Esporta CSV",
+                        data=csv_data,
+                        file_name=f"Turni_W{week_w}_{anno_w}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        key=f"down_{anno_w}_{week_w}"
+                    )
+
+                st.write("**Vista Colorata:**")
+                st.dataframe(df_modificato.style.map(colora_celle), use_container_width=True)
+
+                st.write("**Stima Volumi Giornalieri:**")
+                report = []
+                for chiave in GIORNI_CHIAVI:
+                    op_m = (df_modificato[chiave] == "06:00-13:00").sum()
+                    op_p = (df_modificato[chiave].isin(["12:30-19:30", "13:00-20:00"])).sum()
+                    report.append({
+                        "Giorno": col_labels[chiave],
+                        "Mattina (06-13)": int(op_m),
+                        "Pomeriggio": int(op_p),
+                        "Tot. Operatori": int(op_m + op_p),
+                        "Pezzi Stimati": int((op_m + op_p) * 7 * pieces_ora),
+                    })
+                st.dataframe(pd.DataFrame(report).set_index("Giorno").T, use_container_width=True)
