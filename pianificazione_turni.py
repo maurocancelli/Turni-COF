@@ -3,9 +3,6 @@ import pandas as pd
 import datetime
 import os
 
-# ─────────────────────────────────────────────
-# CONFIGURAZIONE PAGINA
-# ─────────────────────────────────────────────
 st.set_page_config(page_title="Pianificazione Turni - COF", layout="wide")
 st.title("📦 Pianificazione Mensile Reparto E-commerce")
 
@@ -22,6 +19,9 @@ OFFSETS       = [-1, 0, 1, 2, 3, 4, 5, 6]
 OPZIONI_TURNO  = ["06:00-13:00", "12:30-19:30", "13:00-20:00", "RIPOSO", "MALATTIA", "FERIE", "PERMESSO"]
 TARGET_DEFAULT = {"Dom_P": 45, "Lun": 90, "Mar": 75, "Mer": 75, "Gio": 75, "Ven": 90, "Sab": 90, "Dom_S": 45}
 TARGET_DOM     = 10
+
+# Domenica: solo turno mattino
+TURNO_DOMENICA = "06:00-13:00"
 
 MATRICE_TURNI = {
     0: {1: "06:00-13:00", 2: "06:00-13:00", 3: "13:00-20:00",  4: "12:30-19:30"},
@@ -40,7 +40,7 @@ def pulisci_riposi(val):
         return "Nessuno"
     return str(val).strip()
 
-def turno_base(squadra, numero_settimana):
+def turno_infrasettimanale(squadra, numero_settimana):
     ciclo = numero_settimana % 4
     return MATRICE_TURNI[ciclo][int(squadra)]
 
@@ -63,15 +63,14 @@ def is_definitiva(anno, week):
         return False
     try:
         df = pd.read_csv(fname, nrows=1)
-        val = df.get("_definitiva", pd.Series([False]))[0]
-        return bool(val) == True
+        return bool(df.get("_definitiva", pd.Series([False]))[0])
     except Exception:
         return False
 
 def salva_settimana(df, anno, week, definitiva):
-    df = df.copy()
-    df["_definitiva"] = definitiva
-    df.to_csv(file_settimana(anno, week), index=False)
+    d = df.copy()
+    d["_definitiva"] = definitiva
+    d.to_csv(file_settimana(anno, week), index=False)
 
 def carica_settimana(anno, week):
     fname = file_settimana(anno, week)
@@ -83,14 +82,11 @@ def carica_settimana(anno, week):
     return df
 
 def parse_data_malattia(val):
-    """Converte qualsiasi valore in datetime.date o None, senza mai restituire NaT."""
     if val is None:
         return None
     try:
         parsed = pd.to_datetime(val)
-        if pd.isnull(parsed):
-            return None
-        return parsed.date()
+        return None if pd.isnull(parsed) else parsed.date()
     except Exception:
         return None
 
@@ -144,27 +140,32 @@ def salva_anagrafica(df):
     df.to_csv(FILE_ANAGRAFICA, index=False)
 
 # ─────────────────────────────────────────────
-# LOGICA DOMENICHE PRECEDENTI
+# LEGGI DOM_S DA FILE STORICO (settimana prima della finestra)
 # ─────────────────────────────────────────────
-def calcola_domeniche_precedenti(week_target, anno_target):
-    week_prec = week_target - 1
-    anno_prec = anno_target
-    if week_prec < 1:
-        week_prec = 52
-        anno_prec -= 1
-    df_prec = carica_settimana(anno_prec, week_prec)
-    risultato = {}
-    if df_prec is not None and "Dom_S" in df_prec.columns:
-        for _, row in df_prec.iterrows():
-            nome = row.get("Dipendente")
-            if nome:
-                risultato[nome] = str(row.get("Dom_S", "RIPOSO"))
-    return risultato
+def leggi_dom_s_precedente(week_target, anno_target):
+    """
+    Restituisce dict nome -> valore_dom_s (stringa) dalla settimana
+    immediatamente prima di week_target. Se non esiste ritorna {}.
+    """
+    w = week_target - 1
+    a = anno_target
+    if w < 1:
+        w = 52
+        a -= 1
+    df = carica_settimana(a, w)
+    if df is None or "Dom_S" not in df.columns:
+        return {}
+    return {
+        row["Dipendente"]: str(row["Dom_S"])
+        for _, row in df.iterrows()
+        if row.get("Dipendente")
+    }
 
 # ─────────────────────────────────────────────
 # GENERAZIONE TABELLONE
+# dom_s_prec: dict nome -> valore stringa Dom_S settimana precedente
 # ─────────────────────────────────────────────
-def genera_tabellone(week_num, anno, lunedi, dom_precedenti, target_pct):
+def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
     dati = st.session_state.df_anagrafica.to_dict("records")
     dati = [d for d in dati if d.get("Nome") and str(d.get("Nome")).strip()]
     n_totale = len(dati)
@@ -173,51 +174,43 @@ def genera_tabellone(week_num, anno, lunedi, dom_precedenti, target_pct):
     data_dom_s = lunedi + datetime.timedelta(days=6)
     dip_map = {d["Nome"]: d for d in dati}
 
-    # ── STEP 1: struttura base ──
     rows = []
     for dip in dati:
         nome = dip["Nome"]
-        ferie_settimane = set()
+        ferie_set = set()
         for fk in ["Ferie W1", "Ferie W2", "Ferie W3"]:
             v = dip.get(fk)
             if v is not None:
                 try:
-                    ferie_settimane.add(int(v))
+                    ferie_set.add(int(v))
                 except Exception:
                     pass
-        in_ferie = week_num in ferie_settimane
+        in_ferie = week_num in ferie_set
         data_mal = parse_data_malattia(dip.get("Malattia Fino Al"))
-
         rows.append({
-            "Dipendente": nome,
-            "Contratto": dip["Contratto"],
-            "Squadra": dip["Squadra"],
-            "_in_ferie": in_ferie,
-            "_data_mal": data_mal,
+            "Dipendente": nome, "Contratto": dip["Contratto"], "Squadra": dip["Squadra"],
+            "_in_ferie": in_ferie, "_data_mal": data_mal,
             "Dom_P": None, "Lun": None, "Mar": None, "Mer": None,
             "Gio": None, "Ven": None, "Sab": None, "Dom_S": None,
         })
 
     df = pd.DataFrame(rows)
 
-    # ── STEP 2: turni infrasettimanali Lun-Sab ──
+    # ── Turni infrasettimanali Lun-Sab ──
     for idx, row in df.iterrows():
         dip = dip_map[row["Dipendente"]]
-        in_ferie = row["_in_ferie"]
-        data_mal = row["_data_mal"]
-        t_base = turno_base(dip["Squadra"], week_num)
-
+        t_base = turno_infrasettimanale(dip["Squadra"], week_num)
         for chiave, offset in zip(GIORNI_CHIAVI[1:7], OFFSETS[1:7]):
             data_g = lunedi + datetime.timedelta(days=offset)
-            in_malattia = (data_mal is not None) and (data_g <= data_mal)
-            if in_malattia:
+            in_mal = (row["_data_mal"] is not None) and (data_g <= row["_data_mal"])
+            if in_mal:
                 df.at[idx, chiave] = "MALATTIA"
-            elif in_ferie:
+            elif row["_in_ferie"]:
                 df.at[idx, chiave] = "FERIE"
             else:
                 df.at[idx, chiave] = t_base
 
-    # ── STEP 3: riposi PT ──
+    # ── Riposi PT ──
     for idx, row in df.iterrows():
         if row["Contratto"] != "PT" or row["_in_ferie"]:
             continue
@@ -226,101 +219,91 @@ def genera_tabellone(week_num, anno, lunedi, dom_precedenti, target_pct):
                   if r and r != "Nessuno"]
         if not riposi:
             continue
+        val_dom_p = dom_s_prec.get(row["Dipendente"], None)
+        ha_lavorato_dom = val_dom_p is not None and val_dom_p not in ASSENTE
 
-        ha_lavorato_dom_p = dom_precedenti.get(row["Dipendente"], False)
-
-        def target_di(giorno_nome):
+        def target_di(g):
             for k, off in zip(GIORNI_CHIAVI[1:7], OFFSETS[1:7]):
-                if GIORNI_BASE[off - 1] == giorno_nome:
+                if GIORNI_BASE[off - 1] == g:
                     return target_pct.get(k, 0.75)
             return 0.75
 
         if len(riposi) == 2:
-            t1 = target_di(riposi[0])
-            t2 = target_di(riposi[1])
-            riposo_primario   = riposi[0] if t1 <= t2 else riposi[1]
-            riposo_secondario = riposi[1] if t1 <= t2 else riposi[0]
-            riposi_da_applicare = [riposo_primario] if ha_lavorato_dom_p else [riposo_primario, riposo_secondario]
+            t1, t2 = target_di(riposi[0]), target_di(riposi[1])
+            r_prim = riposi[0] if t1 <= t2 else riposi[1]
+            r_sec  = riposi[1] if t1 <= t2 else riposi[0]
+            da_app = [r_prim] if ha_lavorato_dom else [r_prim, r_sec]
         else:
-            riposi_da_applicare = riposi
+            da_app = riposi
 
-        for giorno_nome in riposi_da_applicare:
+        for g in da_app:
             for chiave, offset in zip(GIORNI_CHIAVI[1:7], OFFSETS[1:7]):
-                if GIORNI_BASE[offset - 1] == giorno_nome:
+                if GIORNI_BASE[offset - 1] == g:
                     if df.at[idx, chiave] not in {"MALATTIA", "FERIE"}:
                         df.at[idx, chiave] = "RIPOSO"
                     break
 
-    # ── STEP 4: riposo FT ──
+    # ── Riposo FT (un giorno a settimana) ──
     for idx, row in df.iterrows():
         if row["Contratto"] != "FT" or row["_in_ferie"]:
             continue
-        tutti_malattia = all(df.at[idx, k] == "MALATTIA" for k in GIORNI_CHIAVI[1:7])
-        if tutti_malattia:
+        if all(df.at[idx, k] == "MALATTIA" for k in GIORNI_CHIAVI[1:7]):
             continue
-
-        miglior_chiave = None
-        max_surplus = -9999
+        miglior = None
+        max_sur = -9999
         for chiave in GIORNI_CHIAVI[1:7]:
             if df.at[idx, chiave] in ASSENTE:
                 continue
-            lavoratori = (~df[chiave].isin(ASSENTE)).sum()
-            target_n = n_totale * target_pct.get(chiave, 0.75)
-            surplus = lavoratori - target_n
-            if surplus > max_surplus:
-                max_surplus = surplus
-                miglior_chiave = chiave
+            lav = (~df[chiave].isin(ASSENTE)).sum()
+            sur = lav - n_totale * target_pct.get(chiave, 0.75)
+            if sur > max_sur:
+                max_sur = sur
+                miglior = chiave
+        if miglior:
+            df.at[idx, miglior] = "RIPOSO"
 
-        if miglior_chiave:
-            df.at[idx, miglior_chiave] = "RIPOSO"
-
-    # ── STEP 5: domeniche ──
+    # ── Dom_P: copia esatta della Dom_S della settimana precedente ──
     for idx, row in df.iterrows():
-        dip = dip_map[row["Dipendente"]]
-        in_ferie = row["_in_ferie"]
         data_mal = row["_data_mal"]
-        in_malattia_dom_p = (data_mal is not None) and (data_dom_p <= data_mal)
-
-        if in_malattia_dom_p:
+        in_mal_dom_p = (data_mal is not None) and (data_dom_p <= data_mal)
+        if in_mal_dom_p:
             df.at[idx, "Dom_P"] = "MALATTIA"
-        elif in_ferie:
-            df.at[idx, "Dom_P"] = "06:00-13:00"
         else:
-            val_dom_prec = dom_precedenti.get(row["Dipendente"], None)
-            if val_dom_prec is None:
-                df.at[idx, "Dom_P"] = "06:00-13:00"
+            val_prec = dom_s_prec.get(row["Dipendente"], None)
+            if val_prec is None:
+                # Nessuna info storica: default mattino
+                df.at[idx, "Dom_P"] = TURNO_DOMENICA
             else:
-                # Copia esatta del valore Dom_S della settimana precedente
-                df.at[idx, "Dom_P"] = val_dom_prec
+                # Copia esatta — stesso valore della Dom_S settimana scorsa
+                df.at[idx, "Dom_P"] = val_prec
 
+    # ── Dom_S: rotazione rispetto a Dom_P della STESSA settimana ──
     for idx, row in df.iterrows():
-        dip = dip_map[row["Dipendente"]]
-        in_ferie = row["_in_ferie"]
         data_mal = row["_data_mal"]
-        in_malattia_dom_s = (data_mal is not None) and (data_dom_s <= data_mal)
-
-        if in_malattia_dom_s:
+        in_mal_dom_s = (data_mal is not None) and (data_dom_s <= data_mal)
+        if in_mal_dom_s:
             df.at[idx, "Dom_S"] = "MALATTIA"
-        elif in_ferie:
+        elif row["_in_ferie"]:
+            # Chi è in ferie: lavora Dom_P (già assegnata sopra), riposa Dom_S
             df.at[idx, "Dom_S"] = "RIPOSO"
         else:
-            ha_lav_dom_p = str(df.at[idx, "Dom_P"]) not in ASSENTE
-            if ha_lav_dom_p:
-                df.at[idx, "Dom_S"] = "RIPOSO"
+            dom_p_val = str(df.at[idx, "Dom_P"])
+            if dom_p_val in ASSENTE:
+                # Non ha lavorato Dom_P → lavora Dom_S
+                df.at[idx, "Dom_S"] = TURNO_DOMENICA
             else:
-                df.at[idx, "Dom_S"] = "06:00-13:00"
+                # Ha lavorato Dom_P → riposa Dom_S
+                df.at[idx, "Dom_S"] = "RIPOSO"
 
-    # ── STEP 6: garantisci TARGET_DOM domenica ──
-    lav_dom_s = (~df["Dom_S"].isin(ASSENTE)).sum()
-    da_aggiungere = TARGET_DOM - lav_dom_s
-
-    if da_aggiungere > 0:
-        candidati = df[df["Dom_S"] == "RIPOSO"].index.tolist()
-        for idx in candidati:
-            if da_aggiungere <= 0:
+    # ── Garantisci TARGET_DOM lavoratori in Dom_S ──
+    lav = (~df["Dom_S"].isin(ASSENTE)).sum()
+    mancanti = TARGET_DOM - lav
+    if mancanti > 0:
+        for idx in df[df["Dom_S"] == "RIPOSO"].index:
+            if mancanti <= 0:
                 break
-            df.at[idx, "Dom_S"] = "06:00-13:00"
-            da_aggiungere -= 1
+            df.at[idx, "Dom_S"] = TURNO_DOMENICA
+            mancanti -= 1
 
     df = df.drop(columns=["_in_ferie", "_data_mal"])
     return df[["Dipendente", "Contratto", "Squadra"] + GIORNI_CHIAVI]
@@ -330,9 +313,9 @@ def genera_tabellone(week_num, anno, lunedi, dom_precedenti, target_pct):
 # ─────────────────────────────────────────────
 oggi = datetime.date.today()
 lunedi_corrente = oggi - datetime.timedelta(days=oggi.weekday())
-iso_corrente = lunedi_corrente.isocalendar()
-week_corrente = iso_corrente[1]
-anno_corrente = iso_corrente[0]
+iso_c = lunedi_corrente.isocalendar()
+week_corrente = iso_c[1]
+anno_corrente = iso_c[0]
 
 settimane = []
 for delta in range(-1, 14):
@@ -348,12 +331,10 @@ pieces_ora = st.sidebar.number_input("Pezzi/Ora (Default):", value=100, min_valu
 st.sidebar.divider()
 st.sidebar.subheader("🎯 Forza Lavoro Richiesta (%)")
 st.sidebar.caption("Percentuale di dipendenti attivi per ogni giorno")
-
 target_pct = {}
 for chiave in GIORNI_CHIAVI:
     label = {"Dom_P": "Domenica (inizio)", "Dom_S": "Domenica (fine)"}.get(chiave, chiave)
-    default = TARGET_DEFAULT[chiave]
-    target_pct[chiave] = st.sidebar.slider(label, 0, 100, default, key=f"sl_{chiave}") / 100
+    target_pct[chiave] = st.sidebar.slider(label, 0, 100, TARGET_DEFAULT[chiave], key=f"sl_{chiave}") / 100
 
 # ─────────────────────────────────────────────
 # TABS PRINCIPALI
@@ -365,7 +346,6 @@ tab_anagrafica, tab_turni = st.tabs(["📋 Gestione Anagrafica", "📅 Turni Set
 # ══════════════════════════════════════════════
 with tab_anagrafica:
     st.subheader("👥 Lista Personale e Assenze Programmate")
-
     df_show = st.session_state.df_anagrafica.copy()
     if "Malattia Fino Al" in df_show.columns:
         df_show["Malattia Fino Al"] = pd.to_datetime(df_show["Malattia Fino Al"], errors="coerce").dt.date
@@ -380,16 +360,11 @@ with tab_anagrafica:
         "Ferie W2": st.column_config.NumberColumn("Ferie W2 (N. Sett. ISO)", min_value=1, max_value=53),
         "Ferie W3": st.column_config.NumberColumn("Ferie W3 (N. Sett. ISO)", min_value=1, max_value=53),
     }
-
     df_editato = st.data_editor(
-        df_show,
-        column_config=config_anagrafica,
-        num_rows="dynamic",
-        use_container_width=True,
-        hide_index=True,
-        key="anagrafica_editor"
+        df_show, column_config=config_anagrafica,
+        num_rows="dynamic", use_container_width=True,
+        hide_index=True, key="anagrafica_editor"
     )
-
     if st.button("💾 Salva Modifiche Anagrafica", type="primary", use_container_width=True):
         salva_anagrafica(df_editato)
         st.success("✅ Anagrafica aggiornata!")
@@ -410,18 +385,14 @@ with tab_anagrafica:
                     st.error("Inserisci un nome valido!")
                 else:
                     nuova_riga = {
-                        "Nome": nuovo_nome.upper(),
-                        "Contratto": nuovo_contratto,
+                        "Nome": nuovo_nome.upper(), "Contratto": nuovo_contratto,
                         "Squadra": nuova_squadra,
                         "Riposo 1": nuovo_r1 if nuovo_contratto == "PT" else "Nessuno",
                         "Riposo 2": nuovo_r2 if nuovo_contratto == "PT" else "Nessuno",
                         "Malattia Fino Al": None,
                         "Ferie W1": None, "Ferie W2": None, "Ferie W3": None,
                     }
-                    nuovo_df = pd.concat(
-                        [st.session_state.df_anagrafica, pd.DataFrame([nuova_riga])],
-                        ignore_index=True
-                    )
+                    nuovo_df = pd.concat([st.session_state.df_anagrafica, pd.DataFrame([nuova_riga])], ignore_index=True)
                     salva_anagrafica(nuovo_df)
                     st.success(f"✅ {nuovo_nome.upper()} aggiunto!")
                     st.rerun()
@@ -433,9 +404,7 @@ with tab_anagrafica:
             nome_da_el = st.selectbox("Scegli chi eliminare:", ["Nessuno..."] + lista_nomi)
             if st.button("Elimina", type="primary", use_container_width=True):
                 if nome_da_el != "Nessuno...":
-                    nuovo_df = st.session_state.df_anagrafica[
-                        st.session_state.df_anagrafica["Nome"] != nome_da_el
-                    ]
+                    nuovo_df = st.session_state.df_anagrafica[st.session_state.df_anagrafica["Nome"] != nome_da_el]
                     salva_anagrafica(nuovo_df)
                     st.success(f"❌ {nome_da_el} rimosso.")
                     st.rerun()
@@ -444,59 +413,54 @@ with tab_anagrafica:
 # SCHEDA 2 — TURNI
 # ══════════════════════════════════════════════
 with tab_turni:
-
     if st.session_state.df_anagrafica.empty:
         st.warning("⚠️ Aggiungi prima i dipendenti nell'Anagrafica.")
     else:
+        # ── Costruisci labels ──
         labels_week = []
         for anno_w, week_w, lun_w in settimane:
             dom_p = lun_w - datetime.timedelta(days=1)
             dom_s = lun_w + datetime.timedelta(days=6)
-            flag_def = "🔒" if is_definitiva(anno_w, week_w) else "📝"
-            is_cur = (anno_w == anno_corrente and week_w == week_corrente)
-            marker = " ◀" if is_cur else ""
-            labels_week.append(f"{flag_def} W{week_w} ({dom_p.day}/{dom_p.month}–{dom_s.day}/{dom_s.month}){marker}")
+            flag  = "🔒" if is_definitiva(anno_w, week_w) else "📝"
+            cur   = " ◀" if (anno_w == anno_corrente and week_w == week_corrente) else ""
+            labels_week.append(f"{flag} W{week_w} ({dom_p.day}/{dom_p.month}–{dom_s.day}/{dom_s.month}){cur}")
 
-        # ── Pre-genera tutta la catena PRIMA di renderizzare i tab ──
-        # La Dom_S di ogni settimana alimenta la Dom_P di quella successiva,
-        # garantendo propagazione corretta anche su settimane non salvate.
-        tabelloni = {}  # (anno, week) -> DataFrame
+        # ── Pre-genera la catena completa ──
+        # dom_s_map: nome -> valore stringa Dom_S della settimana precedente
+        tabelloni = {}
 
         for j, (anno_w, week_w, lun_w) in enumerate(settimane):
-            df_salvato = carica_settimana(anno_w, week_w)
-
-            # Ricava dom_prec_bool dalla catena gia costruita (o dal file storico se j==0)
+            # Ricava dom_s_map dalla settimana precedente nella catena
             if j == 0:
-                dom_prec_bool = calcola_domeniche_precedenti(week_w, anno_w)
+                dom_s_map = leggi_dom_s_precedente(week_w, anno_w)
             else:
                 anno_pw, week_pw, _ = settimane[j - 1]
                 df_prec = tabelloni.get((anno_pw, week_pw))
                 if df_prec is not None and "Dom_S" in df_prec.columns:
-                    dom_prec_bool = {
-                        rrow["Dipendente"]: str(rrow["Dom_S"]) not in ASSENTE
+                    dom_s_map = {
+                        rrow["Dipendente"]: str(rrow["Dom_S"])
                         for _, rrow in df_prec.iterrows()
                         if rrow.get("Dipendente")
                     }
                 else:
-                    dom_prec_bool = calcola_domeniche_precedenti(week_w, anno_w)
+                    dom_s_map = leggi_dom_s_precedente(week_w, anno_w)
 
+            df_salvato = carica_settimana(anno_w, week_w)
             if df_salvato is not None:
-                # Usa dati salvati ma FORZA Dom_P = copia esatta Dom_S settimana precedente
                 df_chain = df_salvato.copy()
-                if j > 0:
-                    anno_pw, week_pw, _ = settimane[j - 1]
-                    df_prec = tabelloni.get((anno_pw, week_pw))
-                    if df_prec is not None and "Dom_S" in df_prec.columns:
-                        dom_s_map = df_prec.set_index("Dipendente")["Dom_S"].to_dict()
-                        for ridx, rrow in df_chain.iterrows():
-                            nome = rrow.get("Dipendente")
-                            if nome and nome in dom_s_map:
-                                df_chain.at[ridx, "Dom_P"] = dom_s_map[nome]
+                # Forza Dom_P = copia esatta Dom_S settimana precedente
+                for ridx, rrow in df_chain.iterrows():
+                    nome = rrow.get("Dipendente")
+                    if nome:
+                        val = dom_s_map.get(nome, None)
+                        if val is not None:
+                            df_chain.at[ridx, "Dom_P"] = val
             else:
-                df_chain = genera_tabellone(week_w, anno_w, lun_w, dom_prec_bool, target_pct)
+                df_chain = genera_tabellone(week_w, anno_w, lun_w, dom_s_map, target_pct)
 
             tabelloni[(anno_w, week_w)] = df_chain
 
+        # ── Renderizza i tab ──
         tabs_week = st.tabs(labels_week)
 
         for i, (t_week, (anno_w, week_w, lun_w)) in enumerate(zip(tabs_week, settimane)):
@@ -519,10 +483,10 @@ with tab_turni:
                 }
 
                 definitiva = is_definitiva(anno_w, week_w)
-                df_calcolato = tabelloni[(anno_w, week_w)]
+                df_calcolato = tabelloni[(anno_w, week_w)].copy()
 
                 if definitiva:
-                    st.success("🔒 **Settimana DEFINITIVA** — modificabile ma bloccata")
+                    st.success("🔒 **Settimana DEFINITIVA**")
                 else:
                     st.info("📝 **Settimana PROVVISORIA** — generata automaticamente")
 
@@ -535,28 +499,25 @@ with tab_turni:
                 )
 
                 col1, col2, col3 = st.columns(3)
-
                 with col1:
                     if not definitiva:
                         if st.button("🔒 Blocca come Definitiva", type="primary",
                                      use_container_width=True, key=f"blocca_{anno_w}_{week_w}"):
                             salva_settimana(df_modificato, anno_w, week_w, definitiva=True)
-                            st.success("✅ Settimana bloccata!")
+                            st.success("✅ Bloccata!")
                             st.rerun()
                     else:
-                        if st.button("🔓 Sblocca (Provvisoria)", type="secondary",
+                        if st.button("🔓 Sblocca", type="secondary",
                                      use_container_width=True, key=f"sblocca_{anno_w}_{week_w}"):
                             salva_settimana(df_modificato, anno_w, week_w, definitiva=False)
-                            st.success("↩️ Settimana sbloccata!")
+                            st.success("↩️ Sbloccata!")
                             st.rerun()
-
                 with col2:
                     if st.button("💾 Salva Modifiche", use_container_width=True,
                                  key=f"salva_{anno_w}_{week_w}"):
                         salva_settimana(df_modificato, anno_w, week_w, definitiva=definitiva)
                         st.success("✅ Salvato!")
                         st.rerun()
-
                 with col3:
                     df_exp = df_modificato.copy()
                     df_exp.rename(columns=rinomina_exp, inplace=True)
