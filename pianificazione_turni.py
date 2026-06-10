@@ -63,10 +63,11 @@ def colora_celle(valore):
 
 def genera_pdf_settimana(df, week_num, lun_w, col_labels):
     """
-    Genera un PDF stile 'foglio Excel': una riga per dipendente,
-    due colonne (inizio/fine) per ogni giorno Lun-Dom.
-    Per assenze (RIPOSO/FERIE/MALATTIA/PERMESSO) il testo è scritto
-    centrato sulle due colonne del giorno.
+    Genera un PDF: una riga per dipendente, due colonne per ogni giorno
+    Lun-Dom: colonna sinistra = turno MATTINO (6-13), colonna destra =
+    turno POMERIGGIO (12.30-19.30 o 13-20). Solo una delle due e' valorizzata.
+    Le assenze (RIPOSO/FERIE/MALATTIA/PERMESSO) sono scritte centrate
+    su entrambe le colonne del giorno.
     """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -77,10 +78,9 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels):
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         "TitoloWeek", parent=styles["Heading1"],
-        fontSize=18, textColor=colors.HexColor("#4CAF50"), spaceAfter=4
+        fontSize=18, textColor=colors.HexColor("#2E7D32"), spaceAfter=4
     )
 
-    # Ordine giorni per il PDF: Lun-Dom (esclude Dom_P, mostra Dom_S come Domenica)
     giorni_pdf = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
     nomi_giorni_pdf = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"]
 
@@ -88,47 +88,71 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels):
     elementi.append(Paragraph(f"WEEK {week_num}", title_style))
     elementi.append(Spacer(1, 4*mm))
 
-    # ── Header riga 1: nomi giorni con data ──
+    def fmt_orario(val):
+        """Converte '06:00-13:00' -> ('6-13', 'mattino'), '12:30-19:30' -> ('12.30-19.30','pomeriggio'), '13:00-20:00' -> ('13-20','pomeriggio')"""
+        if val == "06:00-13:00":
+            return "6-13", "mattino"
+        if val == "12:30-19:30":
+            return "12.30-19.30", "pomeriggio"
+        if val == "13:00-20:00":
+            return "13-20", "pomeriggio"
+        return None, None
+
+    # ── Header: nome giorno + data ──
     header1 = ["DIPENDENTE"]
-    header2 = [""]
     for chiave, nome_g in zip(giorni_pdf, nomi_giorni_pdf):
         lbl = col_labels.get(chiave, nome_g)
-        # estrai il numero del giorno dalla label tipo "Lun 9/6"
         try:
             giorno_num = lbl.split(" ")[1].split("/")[0]
         except Exception:
             giorno_num = ""
         header1.append(f"{nome_g} {giorno_num}")
-        header1.append("")  # seconda colonna del giorno (merge)
-        header2.append("")
-        header2.append("")
+        header1.append("")
 
     data_table = [header1]
 
-    for _, row in df.iterrows():
+    # Traccia per ogni cella: tipo di contenuto, per colorare dopo
+    cell_kind = {}  # (row_idx, col_idx) -> "assente"/"mattino"/"pomeriggio"/"valore_assenza"
+
+    for r_idx, (_, row) in enumerate(df.iterrows(), start=1):
         riga = [row["Dipendente"]]
-        for chiave in giorni_pdf:
+        for gi, chiave in enumerate(giorni_pdf):
+            c1 = 1 + gi * 2
+            c2 = c1 + 1
             val = str(row[chiave])
             if val in ASSENTE:
                 riga.append(val)
                 riga.append("")
-            elif "-" in val and ":" in val:
-                inizio, fine = val.split("-")
-                riga.append(inizio)
-                riga.append(fine)
+                cell_kind[(r_idx, gi)] = ("assente", val)
             else:
-                riga.append(val)
-                riga.append("")
+                txt, fascia = fmt_orario(val)
+                if fascia == "mattino":
+                    riga.append(txt)
+                    riga.append("")
+                    cell_kind[(r_idx, gi)] = ("mattino", val)
+                elif fascia == "pomeriggio":
+                    riga.append("")
+                    riga.append(txt)
+                    cell_kind[(r_idx, gi)] = ("pomeriggio", val)
+                else:
+                    riga.append(val)
+                    riga.append("")
         data_table.append(riga)
 
     n_cols = len(header1)
-    col_widths = [38*mm] + [12*mm] * (n_cols - 1)
+    # Colonna mattino piu' stretta, colonna pomeriggio piu' larga (per "12.30-19.30")
+    col_widths = [36*mm]
+    for _ in giorni_pdf:
+        col_widths += [10*mm, 16*mm]
 
     tbl = Table(data_table, colWidths=col_widths, repeatRows=1)
 
+    # ── Stile base: tutto bianco/nero, nessuno sfondo scuro generale ──
     style_cmds = [
-        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2E7D32")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("ALIGN", (1, 0), (-1, -1), "CENTER"),
@@ -138,49 +162,50 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels):
         ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
         ("ALIGN", (0, 0), (0, -1), "LEFT"),
         ("LEFTPADDING", (0, 0), (0, -1), 4),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F5F5")]),
     ]
 
-    # Merge celle header per ogni giorno (2 colonne) e merge verticale header
+    # Merge header per ogni giorno (2 colonne)
     style_cmds.append(("SPAN", (0, 0), (0, 0)))
     for gi in range(len(giorni_pdf)):
         c1 = 1 + gi * 2
         c2 = c1 + 1
         style_cmds.append(("SPAN", (c1, 0), (c2, 0)))
-        # separatore verticale più marcato tra giorni
         style_cmds.append(("LINEAFTER", (c2, 0), (c2, -1), 1.2, colors.black))
 
-    # Colora celle assenza nel body
-    palette = {
-        "RIPOSO":   colors.HexColor("#F2F2F2"),
-        "FERIE":    colors.HexColor("#FFE6CC"),
-        "MALATTIA": colors.HexColor("#FFCCCC"),
-        "PERMESSO": colors.HexColor("#E6F2FF"),
+    # Colori per assenze e turni
+    palette_assenza = {
+        "RIPOSO":   (colors.HexColor("#F2F2F2"), colors.HexColor("#7F7F7F")),
+        "FERIE":    (colors.HexColor("#FFE6CC"), colors.HexColor("#CC6600")),
+        "MALATTIA": (colors.HexColor("#FFCCCC"), colors.HexColor("#CC0000")),
+        "PERMESSO": (colors.HexColor("#E6F2FF"), colors.HexColor("#0066CC")),
     }
-    for r_idx, row in enumerate(df.itertuples(), start=1):
-        for gi, chiave in enumerate(giorni_pdf):
-            val = str(getattr(row, chiave))
-            if val in palette:
-                c1 = 1 + gi * 2
-                c2 = c1 + 1
-                style_cmds.append(("SPAN", (c1, r_idx), (c2, r_idx)))
-                style_cmds.append(("BACKGROUND", (c1, r_idx), (c2, r_idx), palette[val]))
-                txt_color = {
-                    "RIPOSO": colors.HexColor("#7F7F7F"),
-                    "FERIE": colors.HexColor("#CC6600"),
-                    "MALATTIA": colors.HexColor("#CC0000"),
-                    "PERMESSO": colors.HexColor("#0066CC"),
-                }[val]
-                style_cmds.append(("TEXTCOLOR", (c1, r_idx), (c2, r_idx), txt_color))
-                style_cmds.append(("FONTNAME", (c1, r_idx), (c2, r_idx), "Helvetica-Bold"))
-            elif "06:00" in val:
-                c1 = 1 + gi * 2
-                c2 = c1 + 1
-                style_cmds.append(("BACKGROUND", (c1, r_idx), (c2, r_idx), colors.HexColor("#E6FFED")))
-            elif "12:30" in val or "13:00" in val:
-                c1 = 1 + gi * 2
-                c2 = c1 + 1
-                style_cmds.append(("BACKGROUND", (c1, r_idx), (c2, r_idx), colors.HexColor("#FBEFFF")))
+
+    for (r_idx, gi), (kind, val) in cell_kind.items():
+        c1 = 1 + gi * 2
+        c2 = c1 + 1
+        if kind == "assente":
+            bg, fg = palette_assenza[val]
+            style_cmds.append(("SPAN", (c1, r_idx), (c2, r_idx)))
+            style_cmds.append(("BACKGROUND", (c1, r_idx), (c2, r_idx), bg))
+            style_cmds.append(("TEXTCOLOR", (c1, r_idx), (c2, r_idx), fg))
+            style_cmds.append(("FONTNAME", (c1, r_idx), (c2, r_idx), "Helvetica-Bold"))
+            style_cmds.append(("FONTSIZE", (c1, r_idx), (c2, r_idx), 7))
+        elif kind == "mattino":
+            style_cmds.append(("BACKGROUND", (c1, r_idx), (c1, r_idx), colors.HexColor("#E6FFED")))
+            style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), 8))
+        elif kind == "pomeriggio":
+            style_cmds.append(("BACKGROUND", (c2, r_idx), (c2, r_idx), colors.HexColor("#FBEFFF")))
+            style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), 6.5))
+
+    # Righe alterne bianco/grigio chiarissimo SOLO dove non c'e' gia' un colore assenza
+    for r_idx in range(1, len(data_table)):
+        if r_idx % 2 == 0:
+            for gi in range(len(giorni_pdf)):
+                if (r_idx, gi) not in cell_kind or cell_kind[(r_idx, gi)][0] in ("mattino", "pomeriggio"):
+                    c1 = 1 + gi * 2
+                    c2 = c1 + 1
+                    if (r_idx, gi) not in cell_kind:
+                        style_cmds.append(("BACKGROUND", (c1, r_idx), (c2, r_idx), colors.HexColor("#FAFAFA")))
 
     tbl.setStyle(TableStyle(style_cmds))
     elementi.append(tbl)
