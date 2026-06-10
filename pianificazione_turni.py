@@ -721,26 +721,34 @@ with tab_turni:
 
                 if definitiva:
                     config_turni = {
+                        "Contratto": None,
+                        "Squadra": None,
+                    }
+                    config_turni.update({
                         chiave: st.column_config.SelectboxColumn(
                             col_labels[chiave],
                             options=OPZIONI_TURNO,
                             disabled=(chiave == "Dom_P")
                         )
                         for chiave in GIORNI_CHIAVI
-                    }
+                    })
                     msg = "🔒 **Settimana DEFINITIVA** — consegnata. Puoi modificare solo MALATTIA/FERIE/PERMESSO; gli orari altrui non cambiano."
                     if ha_mod:
                         msg += "  \n✏️ *Sono presenti modifiche manuali rispetto alla generazione originale.*"
                     st.success(msg)
                 else:
                     config_turni = {
+                        "Contratto": None,
+                        "Squadra": None,
+                    }
+                    config_turni.update({
                         chiave: st.column_config.SelectboxColumn(
                             col_labels[chiave],
                             options=OPZIONI_TURNO,
                             disabled=(chiave == "Dom_P" and i > 0)
                         )
                         for chiave in GIORNI_CHIAVI
-                    }
+                    })
                     msg = "📝 **Settimana PROVVISORIA** — generata automaticamente, si adatta a malattie/ferie/permessi inseriti."
                     if ha_mod:
                         msg += "  \n✏️ *Sono presenti modifiche manuali, riapplicate ad ogni rigenerazione.*"
@@ -764,7 +772,8 @@ with tab_turni:
                             min-height: 200px;
                             display: flex;
                             align-items: center;
-                            justify-content: center;
+                            justify-content: flex-start;
+                            padding-top: 16px;
                         ">
                             WEEK {week_w}
                         </div>
