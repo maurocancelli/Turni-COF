@@ -19,7 +19,15 @@ st.markdown("""
         }
     </style>
 """, unsafe_allow_html=True)
-st.markdown("### Pianificazione Trimestrale Reparto E-commerce")
+col_titolo, col_codice = st.columns([4, 1])
+with col_titolo:
+    st.markdown("### Pianificazione Trimestrale Reparto E-commerce")
+with col_codice:
+    st.markdown("""
+        <div style="text-align: right; padding-top: 1.2rem; font-weight: bold; color: #555;">
+            COFW-0340
+        </div>
+    """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
 # COSTANTI
@@ -747,7 +755,7 @@ with tab_turni:
                             background-color: #2E7D32;
                             color: white;
                             font-weight: bold;
-                            font-size: 0.9rem;
+                            font-size: 1.8rem;
                             letter-spacing: 2px;
                             border-radius: 6px;
                             padding: 8px 4px;
