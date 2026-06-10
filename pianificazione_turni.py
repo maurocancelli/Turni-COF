@@ -46,7 +46,7 @@ def pulisci_riposi(val):
         return "Nessuno"
     return str(val).strip()
 
-def turno_base(squadra: int, numero_settimana: int) -> str:
+def turno_base(squadra, numero_settimana):
     ciclo = numero_settimana % 4
     return MATRICE_TURNI[ciclo][squadra]
 
@@ -60,10 +60,10 @@ def colora_celle(valore):
     if "12:30" in v or "13:00" in v: return "background-color:#fbefff;color:#8250df;"
     return ""
 
-def file_settimana(anno: int, week: int) -> str:
+def file_settimana(anno, week):
     return f"Turni_W{week:02d}_{anno}.csv"
 
-def is_definitiva(anno: int, week: int) -> bool:
+def is_definitiva(anno, week):
     fname = file_settimana(anno, week)
     if not os.path.exists(fname):
         return False
@@ -73,12 +73,12 @@ def is_definitiva(anno: int, week: int) -> bool:
     except Exception:
         return False
 
-def salva_settimana(df: pd.DataFrame, anno: int, week: int, definitiva: bool):
+def salva_settimana(df, anno, week, definitiva):
     df = df.copy()
     df["_definitiva"] = definitiva
     df.to_csv(file_settimana(anno, week), index=False)
 
-def carica_settimana(anno: int, week: int) -> pd.DataFrame | None:
+def carica_settimana(anno, week):
     fname = file_settimana(anno, week)
     if not os.path.exists(fname):
         return None
@@ -138,7 +138,7 @@ def salva_anagrafica(df):
 # ─────────────────────────────────────────────
 # LOGICA DOMENICHE
 # ─────────────────────────────────────────────
-def calcola_domeniche_precedenti(week_target: int, anno_target: int) -> dict[str, bool]:
+def calcola_domeniche_precedenti(week_target, anno_target):
     """
     Per ogni dipendente, calcola se ha lavorato la domenica della settimana
     precedente a week_target (utile per la rotazione "una sì una no").
@@ -162,9 +162,9 @@ def calcola_domeniche_precedenti(week_target: int, anno_target: int) -> dict[str
 # ─────────────────────────────────────────────
 # GENERAZIONE TABELLONE SETTIMANA
 # ─────────────────────────────────────────────
-def genera_tabellone(week_num: int, anno: int, lunedi: datetime.date,
-                     dom_precedenti: dict[str, bool],
-                     target_pct: dict[str, float]) -> pd.DataFrame:
+def genera_tabellone(week_num, anno, lunedi,
+                     dom_precedenti,
+                     target_pct):
     """
     Genera il tabellone turni per una settimana.
     dom_precedenti: dict nome -> bool (True = ha lavorato Dom_S settimana precedente)
@@ -484,4 +484,10 @@ with tab_anagrafica:
                         ignore_index=True
                     )
                     salva_anagrafica(nuovo_df)
-                    st.s
+                    st.success(f"✅ {nuovo_nome.upper()} aggiunto!")
+                    st.rerun()
+
+    with col_del:
+        st.subheader("🗑️ Rimuovi Dipendente")
+        with st.container(border=True):
+            lista_nomi = st.session_sta
