@@ -315,7 +315,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
 
         def target_di(g):
             for k, off in zip(GIORNI_CHIAVI[1:7], OFFSETS[1:7]):
-                if GIORNI_BASE[off - 1] == g:
+                if GIORNI_BASE[off] == g:
                     return target_pct.get(k, 0.75)
             return 0.75
 
@@ -332,7 +332,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
 
         for g in da_app:
             for chiave, offset in zip(GIORNI_CHIAVI[1:7], OFFSETS[1:7]):
-                if GIORNI_BASE[offset - 1] == g:
+                if GIORNI_BASE[offset] == g:
                     if df.at[idx, chiave] not in {"MALATTIA", "FERIE"}:
                         df.at[idx, chiave] = "RIPOSO"
                     break
