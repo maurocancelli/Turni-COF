@@ -11,6 +11,26 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 
 st.set_page_config(page_title="Pianificazione Turni - COF", layout="wide")
+
+# ─────────────────────────────────────────────
+# ACCESSO CON PASSWORD
+# ─────────────────────────────────────────────
+PASSWORD_ACCESSO = "maddafakka"
+
+if "autenticato" not in st.session_state:
+    st.session_state.autenticato = False
+
+if not st.session_state.autenticato:
+    st.markdown("### 🔒 Accesso riservato")
+    pwd = st.text_input("Inserisci la password:", type="password")
+    if st.button("Accedi", type="primary"):
+        if pwd == PASSWORD_ACCESSO:
+            st.session_state.autenticato = True
+            st.rerun()
+        else:
+            st.error("❌ Password errata.")
+    st.stop()
+
 st.markdown("""
     <style>
         .block-container {
@@ -39,7 +59,7 @@ GIORNI_CHIAVI = ["Dom_P", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
 GIORNI_BASE   = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato"]
 OFFSETS       = [-1, 0, 1, 2, 3, 4, 5, 6]
 
-OPZIONI_TURNO  = ["06:00-13:00", "12:30-19:30", "13:00-20:00", "RIPOSO", "MALATTIA", "FERIE", "PERMESSO"]
+OPZIONI_TURNO  = ["06:00-13:00", "07:00-14:00", "12:30-19:30", "13:00-20:00", "RIPOSO", "MALATTIA", "FERIE", "PERMESSO"]
 TARGET_DEFAULT = {"Dom_P": 45, "Lun": 90, "Mar": 75, "Mer": 75, "Gio": 75, "Ven": 90, "Sab": 90, "Dom_S": 45}
 TARGET_DOM     = 10
 
@@ -128,9 +148,11 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
     elementi.append(Spacer(1, 2*mm))
 
     def fmt_orario(val):
-        """Converte '06:00-13:00' -> ('6-13', 'mattino'), '12:30-19:30' -> ('12.30-19.30','pomeriggio'), '13:00-20:00' -> ('13-20','pomeriggio')"""
+        """Converte '06:00-13:00' -> ('6-13', 'mattino'), '07:00-14:00' -> ('7-14','mattino'), '12:30-19:30' -> ('12.30-19.30','pomeriggio'), '13:00-20:00' -> ('13-20','pomeriggio')"""
         if val == "06:00-13:00":
             return "6-13", "mattino"
+        if val == "07:00-14:00":
+            return "7-14", "mattino"
         if val == "12:30-19:30":
             return "12.30-19.30", "pomeriggio"
         if val == "13:00-20:00":
@@ -862,6 +884,8 @@ with tab_turni:
                 def fmt_orario_vista(val):
                     if val == "06:00-13:00":
                         return "6-13", "mattino"
+                    if val == "07:00-14:00":
+                        return "7-14", "mattino"
                     if val == "12:30-19:30":
                         return "12.30-19.30", "pomeriggio"
                     if val == "13:00-20:00":
@@ -931,7 +955,7 @@ with tab_turni:
                 st.write("**Stima Volumi Giornalieri:**")
                 report = []
                 for chiave in GIORNI_CHIAVI:
-                    op_m = (df_modificato[chiave] == "06:00-13:00").sum()
+                    op_m = (df_modificato[chiave].isin(["06:00-13:00", "07:00-14:00"])).sum()
                     op_p = (df_modificato[chiave].isin(["12:30-19:30", "13:00-20:00"])).sum()
                     report.append({
                         "Giorno": col_labels[chiave],
