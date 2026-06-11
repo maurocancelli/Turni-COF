@@ -17,6 +17,23 @@ st.set_page_config(page_title="Pianificazione Turni - COF", layout="wide")
 # ─────────────────────────────────────────────
 PASSWORD_ACCESSO = "maddafakka"
 
+FOOTER_HTML = """
+    <style>
+        .footer-credito {
+            position: fixed;
+            bottom: 4px;
+            left: 0;
+            width: 100%;
+            text-align: center;
+            font-size: 0.7rem;
+            color: #999;
+            z-index: 100;
+            pointer-events: none;
+        }
+    </style>
+    <div class="footer-credito">ideato e realizzato da Mauro Cancelli</div>
+"""
+
 if "autenticato" not in st.session_state:
     st.session_state.autenticato = False
 
@@ -29,7 +46,11 @@ if not st.session_state.autenticato:
             st.rerun()
         else:
             st.error("❌ Password errata.")
+    st.markdown("---")
+    st.caption("ideato e realizzato da Mauro Cancelli")
     st.stop()
+
+st.markdown(FOOTER_HTML, unsafe_allow_html=True)
 
 st.markdown("""
     <style>
