@@ -635,7 +635,10 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
                 # Ha lavorato Dom_P → riposa Dom_S
                 df.at[idx, "Dom_S"] = "RIPOSO"
 
-    # ── Garantisci TARGET_DOM lavoratori in Dom_S ──
+    # ── Garantisci ALMENO TARGET_DOM lavoratori in Dom_S ──
+    # Se sono di più (es. per ferie/rotazioni che liberano più persone),
+    # va bene così: l'utente può aggiustare manualmente se serve,
+    # ed è un margine utile per malattie dell'ultimo minuto.
     lav = (~df["Dom_S"].isin(ASSENTE)).sum()
     mancanti = TARGET_DOM - lav
     if mancanti > 0:
@@ -915,34 +918,55 @@ with tab_turni:
                         return "13-20", "pomeriggio"
                     return None, None
 
+                df_pulito_corrente = tabelloni_puliti[(anno_w, week_w)]
+
                 vista_data = {"Dipendente": df_modificato["Dipendente"].tolist()}
                 fascia_map = {}  # col_name -> list of "mattino"/"pomeriggio"/"assente"/None
+                modificato_map = {}  # col_name -> list of bool (cella modificata manualmente)
+
+                # Indicizza il pulito per confronto rapido
+                pulito_idx = df_pulito_corrente.set_index("Dipendente")
+
                 for chiave, nome_g in zip(giorni_vista, nomi_giorni_vista):
                     data_g = lun_w + datetime.timedelta(days=OFFSETS[GIORNI_CHIAVI.index(chiave)])
                     col_m = f"{nome_g} {data_g.day} ☀️"
                     col_p = f"{nome_g} {data_g.day} 🌙"
                     vals_m, vals_p = [], []
                     fascia_m, fascia_p = [], []
-                    for val in df_modificato[chiave]:
-                        val = str(val)
+                    mod_m, mod_p = [], []
+                    for _, riga in df_modificato.iterrows():
+                        nome_dip = riga["Dipendente"]
+                        val = str(riga[chiave])
+                        try:
+                            val_pulito = str(pulito_idx.at[nome_dip, chiave])
+                        except KeyError:
+                            val_pulito = val
+                        cella_modificata = (not definitiva) and (val != val_pulito)
+
                         if val in ASSENTE:
                             vals_m.append(val); vals_p.append(val)
                             fascia_m.append("assente"); fascia_p.append("assente")
+                            mod_m.append(cella_modificata); mod_p.append(cella_modificata)
                         else:
                             txt, fascia = fmt_orario_vista(val)
                             if fascia == "mattino":
                                 vals_m.append(txt); vals_p.append("")
                                 fascia_m.append("mattino"); fascia_p.append(None)
+                                mod_m.append(cella_modificata); mod_p.append(False)
                             elif fascia == "pomeriggio":
                                 vals_m.append(""); vals_p.append(txt)
                                 fascia_m.append(None); fascia_p.append("pomeriggio")
+                                mod_m.append(False); mod_p.append(cella_modificata)
                             else:
                                 vals_m.append(val); vals_p.append("")
                                 fascia_m.append(None); fascia_p.append(None)
+                                mod_m.append(cella_modificata); mod_p.append(False)
                     vista_data[col_m] = vals_m
                     vista_data[col_p] = vals_p
                     fascia_map[col_m] = fascia_m
                     fascia_map[col_p] = fascia_p
+                    modificato_map[col_m] = mod_m
+                    modificato_map[col_p] = mod_p
 
                 df_vista = pd.DataFrame(vista_data)
 
@@ -955,17 +979,26 @@ with tab_turni:
                     "pomeriggio": "background-color:#fbefff;color:#8250df;font-weight:bold;",
                 }
 
+                EVIDENZIA_GIALLO = "background-color:#FFF59D;"
+
                 def stile_colonna(col):
                     name = col.name
                     out = []
                     for i, v in enumerate(col):
                         f = fascia_map.get(name, [None]*len(col))[i]
                         if f == "assente":
-                            out.append(palette_vista[f"assente_{v}"])
+                            base = palette_vista[f"assente_{v}"]
                         elif f in ("mattino", "pomeriggio"):
-                            out.append(palette_vista[f])
+                            base = palette_vista[f]
                         else:
-                            out.append("")
+                            base = ""
+
+                        if modificato_map.get(name, [False]*len(col))[i]:
+                            # Sovrascrive solo lo sfondo con il giallo, mantiene testo/colore originali
+                            base = EVIDENZIA_GIALLO + ";".join(
+                                p for p in base.split(";") if p and not p.strip().startswith("background-color")
+                            )
+                        out.append(base)
                     return out
 
                 st.dataframe(
