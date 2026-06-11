@@ -35,7 +35,8 @@ FOOTER_HTML = """
 """
 
 if "autenticato" not in st.session_state:
-    st.session_state.autenticato = False
+    # Controlla se l'URL contiene il token di sessione (sopravvive ai refresh)
+    st.session_state.autenticato = st.query_params.get("auth") == "ok"
 
 if not st.session_state.autenticato:
     st.markdown("### 🔒 Accesso riservato")
@@ -43,6 +44,7 @@ if not st.session_state.autenticato:
     if st.button("Accedi", type="primary"):
         if pwd == PASSWORD_ACCESSO:
             st.session_state.autenticato = True
+            st.query_params["auth"] = "ok"
             st.rerun()
         else:
             st.error("❌ Password errata.")
