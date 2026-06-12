@@ -563,6 +563,21 @@ def applica_modifiche(df, modifiche_dict):
             df_idx.at[nome, col] = val
     return df_idx.reset_index()
 
+def verifica_riposo_settimanale(df):
+    """
+    Controlla che ogni dipendente abbia almeno un giorno di riposo nella
+    settimana Dom_P->Sab (7 giorni). Dom_S appartiene alla settimana
+    successiva e non viene considerato in questo controllo.
+    Restituisce la lista dei nomi che lavorano tutti i 7 giorni.
+    """
+    giorni_settimana = ["Dom_P", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab"]
+    senza_riposo = []
+    for _, row in df.iterrows():
+        giorni_assenza = sum(1 for chiave in giorni_settimana if str(row[chiave]) in ASSENTE)
+        if giorni_assenza == 0:
+            senza_riposo.append(row["Dipendente"])
+    return senza_riposo
+
 def parse_data_malattia(val):
     if val is None:
         return None
@@ -1002,10 +1017,22 @@ with tab_turni:
                     )
 
                 col1, col2, col3, col4 = st.columns(4)
+
+                # ── Controllo riposo settimanale (eseguito ad ogni rerun, mostra alert se necessario) ──
+                senza_riposo = verifica_riposo_settimanale(df_modificato)
+                if senza_riposo:
+                    nomi_str = ", ".join(senza_riposo)
+                    st.error(
+                        f"⚠️ **Attenzione**: {nomi_str} risulta/risultano programmato/i a lavorare "
+                        f"tutti i 7 giorni della settimana (Dom→Sab) senza alcun riposo, ferie, "
+                        f"malattia o permesso. Assegna almeno un giorno di riposo prima di salvare."
+                    )
+
                 with col1:
                     if not definitiva:
                         if st.button("🔒 Blocca come Definitiva", type="primary",
-                                     use_container_width=True, key=f"blocca_{anno_w}_{week_w}"):
+                                     use_container_width=True, key=f"blocca_{anno_w}_{week_w}",
+                                     disabled=bool(senza_riposo)):
                             salva_settimana(df_modificato, anno_w, week_w, definitiva=True)
                             st.success("✅ Bloccata!")
                             st.rerun()
@@ -1017,7 +1044,8 @@ with tab_turni:
                             st.rerun()
                 with col2:
                     if st.button("💾 Salva Modifiche", use_container_width=True,
-                                 key=f"salva_{anno_w}_{week_w}"):
+                                 key=f"salva_{anno_w}_{week_w}",
+                                 disabled=bool(senza_riposo)):
                         if definitiva:
                             # Salva il file intero così com'è (orari fissi + assenze modificate)
                             salva_settimana(df_modificato, anno_w, week_w, definitiva=True)
