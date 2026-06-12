@@ -1197,7 +1197,7 @@ with tab_turni:
                     df_modificato = st.data_editor(
                         df_calcolato,
                         column_config=config_turni,
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=(n_righe + 1) * 35 + 3,
                         key=f"editor_{anno_w}_{week_w}"
@@ -1218,19 +1218,19 @@ with tab_turni:
                 with col1:
                     if not definitiva:
                         if st.button("🔒 Blocca come Definitiva", type="primary",
-                                     use_container_width=True, key=f"blocca_{anno_w}_{week_w}",
+                                     width="stretch", key=f"blocca_{anno_w}_{week_w}",
                                      disabled=bool(senza_riposo)):
                             salva_settimana(df_modificato, anno_w, week_w, definitiva=True)
                             st.success("✅ Bloccata!")
                             st.rerun()
                     else:
                         if st.button("🔓 Sblocca (torna Provvisoria)", type="secondary",
-                                     use_container_width=True, key=f"sblocca_{anno_w}_{week_w}"):
+                                     width="stretch", key=f"sblocca_{anno_w}_{week_w}"):
                             salva_settimana(df_modificato, anno_w, week_w, definitiva=False)
                             st.success("↩️ Sbloccata!")
                             st.rerun()
                 with col2:
-                    if st.button("💾 Salva Modifiche", use_container_width=True,
+                    if st.button("💾 Salva Modifiche", width="stretch",
                                  key=f"salva_{anno_w}_{week_w}",
                                  disabled=bool(senza_riposo)):
                         if definitiva:
@@ -1256,7 +1256,7 @@ with tab_turni:
                         data=excel_data,
                         file_name=f"Turni_W{week_w}_{anno_w}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
+                        width="stretch",
                         key=f"down_{anno_w}_{week_w}"
                     )
                 with col4:
@@ -1266,7 +1266,7 @@ with tab_turni:
                         data=pdf_data,
                         file_name=f"Turni_W{week_w}_{anno_w}.pdf",
                         mime="application/pdf",
-                        use_container_width=True,
+                        width="stretch",
                         key=f"pdf_{anno_w}_{week_w}"
                     )
                 with col5:
@@ -1276,13 +1276,13 @@ with tab_turni:
                         data=pdf_esposizione_data,
                         file_name=f"Turni_W{week_w}_{anno_w}_esposizione.pdf",
                         mime="application/pdf",
-                        use_container_width=True,
+                        width="stretch",
                         key=f"pdf_exp_{anno_w}_{week_w}"
                     )
 
                 if not definitiva and ha_mod:
                     if st.button("🗑️ Rimuovi modifiche manuali (rigenera da zero)",
-                                 use_container_width=True, key=f"reset_mod_{anno_w}_{week_w}"):
+                                 width="stretch", key=f"reset_mod_{anno_w}_{week_w}"):
                         salva_modifiche({}, anno_w, week_w)
                         if os.path.exists(file_settimana(anno_w, week_w)):
                             os.remove(file_settimana(anno_w, week_w))
@@ -1394,7 +1394,7 @@ with tab_turni:
                     df_vista.style
                         .apply(stile_colonna, subset=[c for c in df_vista.columns if c != "Dipendente"])
                         .set_properties(subset=["Dipendente"], **{"font-weight": "bold"}),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     height=(len(df_vista) + 1) * 35 + 3
                 )
@@ -1445,10 +1445,10 @@ with tab_anagrafica:
     }
     df_editato = st.data_editor(
         df_show, column_config=config_anagrafica,
-        num_rows="dynamic", use_container_width=True,
+        num_rows="dynamic", width="stretch",
         hide_index=True, key="anagrafica_editor"
     )
-    if st.button("💾 Salva Modifiche Anagrafica", type="primary", use_container_width=True):
+    if st.button("💾 Salva Modifiche Anagrafica", type="primary", width="stretch"):
         salva_anagrafica(df_editato)
         st.success("✅ Anagrafica aggiornata!")
 
@@ -1463,7 +1463,7 @@ with tab_anagrafica:
             nuova_squadra   = st.selectbox("Squadra", [1, 2, 3, 4])
             nuovo_r1 = st.selectbox("Riposo Fisso 1 (PT)", ["Nessuno"] + GIORNI_BASE)
             nuovo_r2 = st.selectbox("Riposo Fisso 2 (PT)", ["Nessuno"] + GIORNI_BASE)
-            if st.button("Aggiungi", use_container_width=True):
+            if st.button("Aggiungi", width="stretch"):
                 if not nuovo_nome.strip():
                     st.error("Inserisci un nome valido!")
                 else:
@@ -1485,7 +1485,7 @@ with tab_anagrafica:
         with st.container(border=True):
             lista_nomi = st.session_state.df_anagrafica["Nome"].tolist()
             nome_da_el = st.selectbox("Scegli chi eliminare:", ["Nessuno..."] + lista_nomi)
-            if st.button("Elimina", type="primary", use_container_width=True):
+            if st.button("Elimina", type="primary", width="stretch"):
                 if nome_da_el != "Nessuno...":
                     nuovo_df = st.session_state.df_anagrafica[st.session_state.df_anagrafica["Nome"] != nome_da_el]
                     salva_anagrafica(nuovo_df)
@@ -1529,9 +1529,9 @@ with tab_parametri:
         st.warning("⚠️ Modifiche non applicate")
         col_app, col_ann = st.columns(2)
         with col_app:
-            if st.button("✅ Applica modifiche percentuali", type="primary", use_container_width=True):
+            if st.button("✅ Applica modifiche percentuali", type="primary", width="stretch"):
                 st.session_state.target_pct_confermato = {k: v / 100 for k, v in sliders_tmp.items()}
                 st.rerun()
         with col_ann:
-            if st.button("↩️ Annulla modifiche", use_container_width=True):
+            if st.button("↩️ Annulla modifiche", width="stretch"):
                 st.rerun()
