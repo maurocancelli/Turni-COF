@@ -1030,7 +1030,15 @@ with tab_turni:
                         "Tot. Operatori": int(op_m + op_p),
                         "Pezzi Stimati": int((op_m + op_p) * 7 * pieces_ora),
                     })
-                st.dataframe(pd.DataFrame(report).set_index("Giorno").T, use_container_width=True)
+                df_report = pd.DataFrame(report).set_index("Giorno").T
+                st.dataframe(
+                    df_report.style
+                        .set_table_styles([
+                            {"selector": "th", "props": [("text-align", "right")]}
+                        ])
+                        .set_properties(**{"text-align": "right"}),
+                    use_container_width=True
+                )
 
 # ══════════════════════════════════════════════
 # SCHEDA 1 — ANAGRAFICA
