@@ -830,11 +830,13 @@ with tab_turni:
                         </div>
                     """, unsafe_allow_html=True)
                 with col_editor:
+                    n_righe = len(df_calcolato)
                     df_modificato = st.data_editor(
                         df_calcolato,
                         column_config=config_turni,
                         use_container_width=True,
                         hide_index=True,
+                        height=(n_righe + 1) * 35 + 3,
                         key=f"editor_{anno_w}_{week_w}"
                     )
 
@@ -1007,9 +1009,12 @@ with tab_turni:
                     return out
 
                 st.dataframe(
-                    df_vista.style.apply(stile_colonna, subset=[c for c in df_vista.columns if c != "Dipendente"]),
+                    df_vista.style
+                        .apply(stile_colonna, subset=[c for c in df_vista.columns if c != "Dipendente"])
+                        .set_properties(subset=["Dipendente"], **{"font-weight": "bold"}),
                     use_container_width=True,
-                    hide_index=True
+                    hide_index=True,
+                    height=(len(df_vista) + 1) * 35 + 3
                 )
 
 
