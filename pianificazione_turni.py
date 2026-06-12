@@ -492,7 +492,7 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
     buffer.seek(0)
     return buffer.getvalue()
 
-
+def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
     """
     Genera un file Excel (.xlsx): una riga per dipendente, 4 colonne per ogni
     giorno Lun-Dom: [In1, Out1, In2, Out2].
