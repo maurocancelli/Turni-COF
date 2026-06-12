@@ -9,6 +9,9 @@ from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
 
 st.set_page_config(page_title="Pianificazione Turni - COF", layout="wide")
 
@@ -299,6 +302,164 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
     elementi.append(tbl)
 
     doc.build(elementi)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
+    """
+    Genera un file Excel (.xlsx): una riga per dipendente, 4 colonne per ogni
+    giorno Lun-Dom: [In1, Out1, In2, Out2].
+      - Turno 06:00-13:00 o 06:00-13:00* o 07:00-14:00 -> In1/Out1 valorizzate
+        (es. "6","13" oppure "7","14"), In2/Out2 vuote.
+      - Turno 12:30-19:30 o 13:00-20:00 -> In1/Out1 vuote, In2/Out2 valorizzate
+        (es. "12,30","19,30" oppure "13","20").
+      - Assenze (RIPOSO/FERIE/MALATTIA/PERMESSO) -> tutte 4 le colonne vuote.
+    Header su due righe: riga 1 = nome giorno (merged su 4 colonne),
+    riga 2 = vuota.
+    """
+    giorni_excel = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
+    nomi_giorni_excel = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"]
+
+    def split_orario(val):
+        """Restituisce (in1, out1, in2, out2) come stringhe, vuote se non applicabile."""
+        mapping = {
+            "06:00-13:00":  ("6", "13", "", ""),
+            "06:00-13:00*": ("6", "13", "", ""),
+            "07:00-14:00":  ("7", "14", "", ""),
+            "12:30-19:30":  ("", "", "12,30", "19,30"),
+            "13:00-20:00":  ("", "", "13", "20"),
+        }
+        return mapping.get(val, ("", "", "", ""))
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"Week {week_num}"
+
+    # ── Stili ──
+    header_fill = PatternFill(start_color="2E7D32", end_color="2E7D32", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=11)
+    name_font = Font(bold=True, size=11)
+    center = Alignment(horizontal="center", vertical="center")
+    thin = Side(border_style="thin", color="999999")
+    thick = Side(border_style="medium", color="000000")
+    border_normal = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    palette_assenza = {
+        "RIPOSO":   PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid"),
+        "FERIE":    PatternFill(start_color="FFE6CC", end_color="FFE6CC", fill_type="solid"),
+        "MALATTIA": PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid"),
+        "PERMESSO": PatternFill(start_color="E6F2FF", end_color="E6F2FF", fill_type="solid"),
+    }
+    palette_font = {
+        "RIPOSO":   Font(color="7F7F7F", bold=True),
+        "FERIE":    Font(color="CC6600", bold=True),
+        "MALATTIA": Font(color="CC0000", bold=True),
+        "PERMESSO": Font(color="0066CC", bold=True),
+    }
+    fill_mattino = PatternFill(start_color="E6FFED", end_color="E6FFED", fill_type="solid")
+    fill_pomeriggio = PatternFill(start_color="FBEFFF", end_color="FBEFFF", fill_type="solid")
+
+    # ── Titolo (riga 1, sopra l'header) ──
+    dom_p_data = lun_w - datetime.timedelta(days=1)
+    dom_s_data = lun_w + datetime.timedelta(days=6)
+    NOMI_MESI = ["", "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+                 "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"]
+    if dom_p_data.month == dom_s_data.month:
+        periodo = f"dal {dom_p_data.day} al {dom_s_data.day} {NOMI_MESI[dom_s_data.month]}"
+    else:
+        periodo = (f"dal {dom_p_data.day} {NOMI_MESI[dom_p_data.month]} "
+                   f"al {dom_s_data.day} {NOMI_MESI[dom_s_data.month]}")
+    stato_label = "DEFINITIVO" if definitiva else "PROVVISORIO"
+
+    n_giorni = len(giorni_excel)
+    n_cols_tot = 1 + n_giorni * 4  # 1 colonna nomi + 4 per giorno
+
+    ws.cell(row=1, column=1, value=f"WEEK {week_num}   {periodo}   -   {stato_label}")
+    ws.cell(row=1, column=1).font = Font(bold=True, size=13, color="2E7D32")
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_cols_tot)
+
+    # ── Header riga 2: nome dipendente + nomi giorni (merge su 4 colonne) ──
+    HEADER_ROW = 2
+    SUBHEADER_ROW = 3
+    DATA_START_ROW = 4
+
+    ws.cell(row=HEADER_ROW, column=1, value="DIPENDENTE")
+    ws.cell(row=HEADER_ROW, column=1).fill = header_fill
+    ws.cell(row=HEADER_ROW, column=1).font = header_font
+    ws.cell(row=HEADER_ROW, column=1).alignment = center
+    ws.merge_cells(start_row=HEADER_ROW, start_column=1, end_row=SUBHEADER_ROW, end_column=1)
+
+    for gi, (chiave, nome_g) in enumerate(zip(giorni_excel, nomi_giorni_excel)):
+        c1 = 2 + gi * 4
+        lbl = col_labels.get(chiave, nome_g)
+        try:
+            giorno_num = lbl.split(" ")[1].split("/")[0]
+        except Exception:
+            giorno_num = ""
+        cell = ws.cell(row=HEADER_ROW, column=c1, value=f"{nome_g} {giorno_num}")
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center
+        ws.merge_cells(start_row=HEADER_ROW, start_column=c1, end_row=HEADER_ROW, end_column=c1 + 3)
+        # Riga 3 (sub-header) vuota ma colorata
+        for cc in range(c1, c1 + 4):
+            sub = ws.cell(row=SUBHEADER_ROW, column=cc, value="")
+            sub.fill = header_fill
+
+    # ── Righe dati ──
+    for r_offset, (_, row) in enumerate(df.iterrows()):
+        r = DATA_START_ROW + r_offset
+        cell_nome = ws.cell(row=r, column=1, value=row["Dipendente"])
+        cell_nome.font = name_font
+        cell_nome.border = border_normal
+        cell_nome.alignment = Alignment(horizontal="left", vertical="center")
+
+        for gi, chiave in enumerate(giorni_excel):
+            c1 = 2 + gi * 4
+            val = str(row[chiave])
+
+            if val in ASSENTE:
+                for cc in range(c1, c1 + 4):
+                    cell = ws.cell(row=r, column=cc, value="")
+                    cell.alignment = center
+                    cell.fill = palette_assenza[val]
+                    cell.font = palette_font[val]
+                    cell.border = border_normal
+            else:
+                in1, out1, in2, out2 = split_orario(val)
+                for offset_c, v in enumerate([in1, out1, in2, out2]):
+                    cell = ws.cell(row=r, column=c1 + offset_c, value=v)
+                    cell.alignment = center
+                    cell.border = border_normal
+                    if in1 or out1:
+                        if offset_c in (0, 1):
+                            cell.fill = fill_mattino
+                    if in2 or out2:
+                        if offset_c in (2, 3):
+                            cell.fill = fill_pomeriggio
+
+    # ── Larghezze colonne ──
+    ws.column_dimensions["A"].width = 24
+    for gi in range(n_giorni):
+        for offset_c in range(4):
+            col_letter = get_column_letter(2 + gi * 4 + offset_c)
+            ws.column_dimensions[col_letter].width = 7
+
+    # ── Bordo scuro tra giorni (separatore visivo) ──
+    for gi in range(n_giorni):
+        c_last = 2 + gi * 4 + 3  # ultima colonna del giorno
+        for r in range(HEADER_ROW, DATA_START_ROW + len(df)):
+            cell = ws.cell(row=r, column=c_last)
+            existing = cell.border
+            cell.border = Border(
+                left=existing.left, top=existing.top, bottom=existing.bottom,
+                right=thick
+            )
+
+    ws.freeze_panes = ws.cell(row=DATA_START_ROW, column=2)
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
     buffer.seek(0)
     return buffer.getvalue()
 
@@ -874,16 +1035,12 @@ with tab_turni:
                         st.success("✅ Salvato!")
                         st.rerun()
                 with col3:
-                    df_exp = df_modificato.copy()
-                    df_exp.rename(columns=rinomina_exp, inplace=True)
-                    xlsx_cols = ["Dipendente", "Contratto", "Squadra"] + list(rinomina_exp.values())
-                    df_exp = df_exp[[c for c in xlsx_cols if c in df_exp.columns]]
-                    csv_data = df_exp.to_csv(index=False, sep=";").encode("utf-8-sig")
+                    excel_data = genera_excel_settimana(df_modificato, week_w, lun_w, col_labels, definitiva)
                     st.download_button(
-                        label="📥 Esporta CSV",
-                        data=csv_data,
-                        file_name=f"Turni_W{week_w}_{anno_w}.csv",
-                        mime="text/csv",
+                        label="📊 Esporta Excel",
+                        data=excel_data,
+                        file_name=f"Turni_W{week_w}_{anno_w}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                         key=f"down_{anno_w}_{week_w}"
                     )
