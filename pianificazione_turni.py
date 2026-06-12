@@ -1034,7 +1034,8 @@ with tab_turni:
                 st.dataframe(
                     df_report.style
                         .set_table_styles([
-                            {"selector": "th", "props": [("text-align", "right")]}
+                            {"selector": "th.col_heading", "props": [("text-align", "right")]},
+                            {"selector": "th.row_heading", "props": [("text-align", "right")]},
                         ])
                         .set_properties(**{"text-align": "right"}),
                     use_container_width=True
