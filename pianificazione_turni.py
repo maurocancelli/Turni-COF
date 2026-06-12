@@ -316,7 +316,7 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=landscape(A4),
-        leftMargin=4*mm, rightMargin=4*mm, topMargin=6*mm, bottomMargin=6*mm
+        leftMargin=2*mm, rightMargin=2*mm, topMargin=6*mm, bottomMargin=6*mm
     )
 
     styles = getSampleStyleSheet()
@@ -380,7 +380,7 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
 
     col_widths = [56*mm]
     for _ in giorni_pdf:
-        col_widths += [12.5*mm, 19*mm]
+        col_widths += [12*mm, 21.85*mm]
 
     def costruisci_tabella(df_gruppo):
         data_table = [header1]
