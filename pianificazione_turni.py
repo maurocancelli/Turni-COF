@@ -378,9 +378,9 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
         header1.append(f"{nome_g} {giorno_num}")
         header1.append("")
 
-    col_widths = [56*mm]
+    col_widths = [60*mm]
     for _ in giorni_pdf:
-        col_widths += [12*mm, 21.85*mm]
+        col_widths += [12*mm, 21.27*mm]
 
     def costruisci_tabella(df_gruppo):
         data_table = [header1]
