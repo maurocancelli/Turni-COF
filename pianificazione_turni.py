@@ -6,7 +6,7 @@ import io
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 from openpyxl import Workbook
@@ -305,7 +305,194 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
     buffer.seek(0)
     return buffer.getvalue()
 
-def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
+def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
+    """
+    Versione 'esposizione' del PDF settimanale: stesso layout di
+    genera_pdf_settimana, ma su 2 pagine A4 orizzontale, con righe e
+    font maggiorati per massima leggibilita' da lontano.
+    Pagina 1: Squadre 1+2. Pagina 2: Squadre 3+4.
+    L'intestazione (WEEK/periodo/stato) e' ripetuta su entrambe le pagine.
+    """
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=landscape(A4),
+        leftMargin=4*mm, rightMargin=4*mm, topMargin=6*mm, bottomMargin=6*mm
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "TitoloWeekExp", parent=styles["Heading1"],
+        fontSize=28, textColor=colors.HexColor("#2E7D32"), spaceAfter=2
+    )
+    status_style_def = ParagraphStyle(
+        "StatusDefinitivoExp", parent=styles["Normal"],
+        fontSize=18, textColor=colors.HexColor("#2E7D32"), fontName="Helvetica-Bold", spaceAfter=6
+    )
+    status_style_prov = ParagraphStyle(
+        "StatusProvvisorioExp", parent=styles["Normal"],
+        fontSize=18, textColor=colors.HexColor("#CC6600"), fontName="Helvetica-Bold", spaceAfter=6
+    )
+
+    giorni_pdf = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
+    nomi_giorni_pdf = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"]
+
+    NOMI_MESI = ["", "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+                 "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"]
+
+    dom_p_data = lun_w - datetime.timedelta(days=1)
+    dom_s_data = lun_w + datetime.timedelta(days=6)
+    if dom_p_data.month == dom_s_data.month:
+        periodo = f"dal {dom_p_data.day} al {dom_s_data.day} {NOMI_MESI[dom_s_data.month]}"
+    else:
+        periodo = (f"dal {dom_p_data.day} {NOMI_MESI[dom_p_data.month]} "
+                   f"al {dom_s_data.day} {NOMI_MESI[dom_s_data.month]}")
+
+    def fmt_orario(val):
+        if val == "06:00-13:00":
+            return "6-13", "mattino"
+        if val == "06:00-13:00*":
+            return "6-13*", "mattino"
+        if val == "07:00-14:00":
+            return "7-14", "mattino"
+        if val == "12:30-19:30":
+            return "12.30-19.30", "pomeriggio"
+        if val == "13:00-20:00":
+            return "13-20", "pomeriggio"
+        return None, None
+
+    palette_assenza = {
+        "RIPOSO":   (colors.HexColor("#F2F2F2"), colors.HexColor("#7F7F7F")),
+        "FERIE":    (colors.HexColor("#FFE6CC"), colors.HexColor("#CC6600")),
+        "MALATTIA": (colors.HexColor("#FFCCCC"), colors.HexColor("#CC0000")),
+        "PERMESSO": (colors.HexColor("#E6F2FF"), colors.HexColor("#0066CC")),
+    }
+
+    # Header colonne (comune alle due pagine)
+    header1 = ["DIPENDENTE"]
+    for chiave, nome_g in zip(giorni_pdf, nomi_giorni_pdf):
+        lbl = col_labels.get(chiave, nome_g)
+        try:
+            giorno_num = lbl.split(" ")[1].split("/")[0]
+        except Exception:
+            giorno_num = ""
+        header1.append(f"{nome_g} {giorno_num}")
+        header1.append("")
+
+    col_widths = [56*mm]
+    for _ in giorni_pdf:
+        col_widths += [12.5*mm, 19*mm]
+
+    def costruisci_tabella(df_gruppo):
+        data_table = [header1]
+        cell_kind = {}
+        for r_idx, (_, row) in enumerate(df_gruppo.iterrows(), start=1):
+            riga = [row["Dipendente"]]
+            for gi, chiave in enumerate(giorni_pdf):
+                val = str(row[chiave])
+                if val in ASSENTE:
+                    riga.append(val)
+                    riga.append("")
+                    cell_kind[(r_idx, gi)] = ("assente", val)
+                else:
+                    txt, fascia = fmt_orario(val)
+                    if fascia == "mattino":
+                        riga.append(txt)
+                        riga.append("")
+                        cell_kind[(r_idx, gi)] = ("mattino", val)
+                    elif fascia == "pomeriggio":
+                        riga.append("")
+                        riga.append(txt)
+                        cell_kind[(r_idx, gi)] = ("pomeriggio", val)
+                    else:
+                        riga.append(val)
+                        riga.append("")
+            data_table.append(riga)
+
+        tbl = Table(data_table, colWidths=col_widths, repeatRows=1)
+
+        style_cmds = [
+            ("FONTSIZE", (0, 0), (-1, -1), 13),
+            ("FONTSIZE", (0, 0), (-1, 0), 11),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+            ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2E7D32")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#999999")),
+            ("BOX", (0, 0), (-1, -1), 1.2, colors.black),
+            ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("LEFTPADDING", (0, 0), (0, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 9),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+        ]
+
+        style_cmds.append(("SPAN", (0, 0), (0, 0)))
+        for gi in range(len(giorni_pdf)):
+            c1 = 1 + gi * 2
+            c2 = c1 + 1
+            style_cmds.append(("SPAN", (c1, 0), (c2, 0)))
+            style_cmds.append(("LINEAFTER", (c2, 0), (c2, -1), 1.2, colors.black))
+
+        for (r_idx, gi), (kind, val) in cell_kind.items():
+            c1 = 1 + gi * 2
+            c2 = c1 + 1
+            if kind == "assente":
+                bg, fg = palette_assenza[val]
+                style_cmds.append(("SPAN", (c1, r_idx), (c2, r_idx)))
+                style_cmds.append(("BACKGROUND", (c1, r_idx), (c2, r_idx), bg))
+                style_cmds.append(("TEXTCOLOR", (c1, r_idx), (c2, r_idx), fg))
+                style_cmds.append(("FONTNAME", (c1, r_idx), (c2, r_idx), "Helvetica-Bold"))
+                style_cmds.append(("FONTSIZE", (c1, r_idx), (c2, r_idx), 12))
+            elif kind == "mattino":
+                style_cmds.append(("BACKGROUND", (c1, r_idx), (c1, r_idx), colors.HexColor("#E6FFED")))
+                style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), 13))
+            elif kind == "pomeriggio":
+                style_cmds.append(("BACKGROUND", (c2, r_idx), (c2, r_idx), colors.HexColor("#FBEFFF")))
+                style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), 12))
+
+        for r_idx in range(1, len(data_table)):
+            if r_idx % 2 == 0:
+                for gi in range(len(giorni_pdf)):
+                    if (r_idx, gi) not in cell_kind:
+                        c1 = 1 + gi * 2
+                        c2 = c1 + 1
+                        style_cmds.append(("BACKGROUND", (c1, r_idx), (c2, r_idx), colors.HexColor("#FAFAFA")))
+
+        tbl.setStyle(TableStyle(style_cmds))
+        return tbl
+
+    def aggiungi_intestazione(elementi, sottotitolo):
+        elementi.append(Paragraph(f"WEEK {week_num} &nbsp;&nbsp; {periodo}", title_style))
+        if definitiva:
+            elementi.append(Paragraph("DEFINITIVO", status_style_def))
+        else:
+            elementi.append(Paragraph("PROVVISORIO", status_style_prov))
+        if sottotitolo:
+            elementi.append(Paragraph(sottotitolo, ParagraphStyle(
+                "Sottotitolo", parent=styles["Normal"],
+                fontSize=14, textColor=colors.HexColor("#555555"), spaceAfter=4
+            )))
+        elementi.append(Spacer(1, 2*mm))
+
+    squadra_int = df["Squadra"].astype(int)
+    df_p1 = df[squadra_int.isin([1, 2])].reset_index(drop=True)
+    df_p2 = df[squadra_int.isin([3, 4])].reset_index(drop=True)
+
+    elementi = []
+    aggiungi_intestazione(elementi, "Squadre 1 e 2")
+    elementi.append(costruisci_tabella(df_p1))
+    elementi.append(PageBreak())
+    aggiungi_intestazione(elementi, "Squadre 3 e 4")
+    elementi.append(costruisci_tabella(df_p2))
+
+    doc.build(elementi)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
     """
     Genera un file Excel (.xlsx): una riga per dipendente, 4 colonne per ogni
     giorno Lun-Dom: [In1, Out1, In2, Out2].
@@ -1016,7 +1203,7 @@ with tab_turni:
                         key=f"editor_{anno_w}_{week_w}"
                     )
 
-                col1, col2, col3, col4 = st.columns(4)
+                col1, col2, col3, col4, col5 = st.columns(5)
 
                 # ── Controllo riposo settimanale (eseguito ad ogni rerun, mostra alert se necessario) ──
                 senza_riposo = verifica_riposo_settimanale(df_modificato)
@@ -1081,6 +1268,16 @@ with tab_turni:
                         mime="application/pdf",
                         use_container_width=True,
                         key=f"pdf_{anno_w}_{week_w}"
+                    )
+                with col5:
+                    pdf_esposizione_data = genera_pdf_esposizione(df_modificato, week_w, lun_w, col_labels, definitiva)
+                    st.download_button(
+                        label="📌 PDF per esposizione",
+                        data=pdf_esposizione_data,
+                        file_name=f"Turni_W{week_w}_{anno_w}_esposizione.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key=f"pdf_exp_{anno_w}_{week_w}"
                     )
 
                 if not definitiva and ha_mod:
