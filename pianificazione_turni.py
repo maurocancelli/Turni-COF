@@ -1031,15 +1031,16 @@ with tab_turni:
                         "Pezzi Stimati": int((op_m + op_p) * 7 * pieces_ora),
                     })
                 df_report = pd.DataFrame(report).set_index("Giorno").T
-                st.dataframe(
+                styler = (
                     df_report.style
-                        .set_table_styles([
-                            {"selector": "th.col_heading", "props": [("text-align", "right")]},
-                            {"selector": "th.row_heading", "props": [("text-align", "right")]},
-                        ])
-                        .set_properties(**{"text-align": "right"}),
-                    use_container_width=True
+                    .set_table_styles([
+                        {"selector": "th", "props": [("text-align", "right"), ("border", "1px solid #333")]},
+                        {"selector": "td", "props": [("text-align", "right"), ("border", "1px solid #333")]},
+                        {"selector": "table", "props": [("border-collapse", "collapse"), ("width", "100%")]},
+                    ])
+                    .set_properties(**{"text-align": "right"})
                 )
+                st.table(styler)
 
 # ══════════════════════════════════════════════
 # SCHEDA 1 — ANAGRAFICA
