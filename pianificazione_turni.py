@@ -324,14 +324,6 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
         "TitoloWeekExp", parent=styles["Heading1"],
         fontSize=28, textColor=colors.HexColor("#2E7D32"), spaceAfter=2
     )
-    status_style_def = ParagraphStyle(
-        "StatusDefinitivoExp", parent=styles["Normal"],
-        fontSize=18, textColor=colors.HexColor("#2E7D32"), fontName="Helvetica-Bold", spaceAfter=6
-    )
-    status_style_prov = ParagraphStyle(
-        "StatusProvvisorioExp", parent=styles["Normal"],
-        fontSize=18, textColor=colors.HexColor("#CC6600"), fontName="Helvetica-Bold", spaceAfter=6
-    )
 
     giorni_pdf = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
     nomi_giorni_pdf = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"]
@@ -465,11 +457,13 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
         return tbl
 
     def aggiungi_intestazione(elementi, sottotitolo):
-        elementi.append(Paragraph(f"WEEK {week_num} &nbsp;&nbsp; {periodo}", title_style))
-        if definitiva:
-            elementi.append(Paragraph("DEFINITIVO", status_style_def))
-        else:
-            elementi.append(Paragraph("PROVVISORIO", status_style_prov))
+        stato_label = "DEFINITIVO" if definitiva else "PROVVISORIO"
+        stato_color = "#2E7D32" if definitiva else "#CC6600"
+        elementi.append(Paragraph(
+            f"WEEK {week_num} &nbsp;&nbsp; {periodo} "
+            f"&nbsp;&nbsp;&nbsp;&nbsp; <font color='{stato_color}'>{stato_label}</font>",
+            title_style
+        ))
         if sottotitolo:
             elementi.append(Paragraph(sottotitolo, ParagraphStyle(
                 "Sottotitolo", parent=styles["Normal"],
