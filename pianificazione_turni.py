@@ -322,7 +322,7 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         "TitoloWeekExp", parent=styles["Heading1"],
-        fontSize=28, textColor=colors.HexColor("#2E7D32"), spaceAfter=2
+        fontSize=34, textColor=colors.HexColor("#2E7D32"), fontName="Helvetica-Bold", spaceAfter=2
     )
 
     giorni_pdf = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
@@ -465,9 +465,10 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
             title_style
         ))
         if sottotitolo:
+            elementi.append(Spacer(1, 3*mm))
             elementi.append(Paragraph(sottotitolo, ParagraphStyle(
                 "Sottotitolo", parent=styles["Normal"],
-                fontSize=14, textColor=colors.HexColor("#555555"), spaceAfter=4
+                fontSize=14, textColor=colors.black, fontName="Helvetica-Bold", spaceAfter=4
             )))
         elementi.append(Spacer(1, 2*mm))
 
