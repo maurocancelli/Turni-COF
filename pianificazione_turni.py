@@ -1308,23 +1308,62 @@ with tab_turni:
                     return None, None
 
                 df_pulito_corrente = tabelloni_puliti[(anno_w, week_w)]
-
-                vista_data = {"Dipendente": df_modificato["Dipendente"].tolist()}
-                fascia_map = {}  # col_name -> list of "mattino"/"pomeriggio"/"assente"/None
-                modificato_map = {}  # col_name -> list of bool (cella modificata manualmente)
-
-                # Indicizza il pulito per confronto rapido
                 pulito_idx = df_pulito_corrente.set_index("Dipendente")
 
+                palette_vista = {
+                    "RIPOSO":   "background-color:#f2f2f2;color:#7f7f7f;",
+                    "FERIE":    "background-color:#ffe6cc;color:#cc6600;",
+                    "MALATTIA": "background-color:#ffcccc;color:#cc0000;",
+                    "PERMESSO": "background-color:#e6f2ff;color:#0066cc;",
+                    "mattino":    "background-color:#e6ffed;color:#1a7f37;",
+                    "pomeriggio": "background-color:#fbefff;color:#8250df;",
+                }
+                EVIDENZIA_GIALLO = "#FFF59D"
+
+                def sostituisci_bg(style, nuovo_bg):
+                    if "background-color:" not in style:
+                        return f"background-color:{nuovo_bg};" + style
+                    vecchio = style.split("background-color:")[1].split(";")[0]
+                    return style.replace(vecchio, nuovo_bg)
+
+                # ── Costruzione tabella HTML (celle unite per le assenze) ──
+                html = ['<table style="width:100%;border-collapse:collapse;font-size:0.85rem;text-align:center;">']
+
+                # Header: riga con nome giorno + data, ogni giorno occupa 2 colonne (☀️/🌙)
+                html.append('<tr>')
+                html.append(
+                    '<th style="border:1px solid #999;padding:4px 8px;background:#2E7D32;'
+                    'color:white;text-align:left;">Dipendente</th>'
+                )
                 for chiave, nome_g in zip(giorni_vista, nomi_giorni_vista):
                     data_g = lun_w + datetime.timedelta(days=OFFSETS[GIORNI_CHIAVI.index(chiave)])
-                    col_m = f"{nome_g} {data_g.day} ☀️"
-                    col_p = f"{nome_g} {data_g.day} 🌙"
-                    vals_m, vals_p = [], []
-                    fascia_m, fascia_p = [], []
-                    mod_m, mod_p = [], []
-                    for _, riga in df_modificato.iterrows():
-                        nome_dip = riga["Dipendente"]
+                    html.append(
+                        f'<th colspan="2" style="border:1px solid #999;padding:4px;'
+                        f'background:#2E7D32;color:white;border-left:2px solid #000;">'
+                        f'{nome_g} {data_g.day}</th>'
+                    )
+                html.append('</tr>')
+
+                # Sub-header ☀️ / 🌙
+                html.append('<tr>')
+                html.append('<th style="border:1px solid #999;padding:2px;background:#f5f5f5;"></th>')
+                for chiave in giorni_vista:
+                    html.append(
+                        '<th style="border:1px solid #999;padding:2px;background:#f5f5f5;'
+                        'border-left:2px solid #000;">☀️</th>'
+                        '<th style="border:1px solid #999;padding:2px;background:#f5f5f5;">🌙</th>'
+                    )
+                html.append('</tr>')
+
+                # Righe dati
+                for r_idx, riga in df_modificato.iterrows():
+                    nome_dip = riga["Dipendente"]
+                    html.append('<tr>')
+                    html.append(
+                        f'<td style="border:1px solid #999;padding:4px 8px;font-weight:bold;'
+                        f'text-align:left;white-space:nowrap;">{nome_dip}</td>'
+                    )
+                    for chiave in giorni_vista:
                         val = str(riga[chiave])
                         try:
                             val_pulito = str(pulito_idx.at[nome_dip, chiave])
@@ -1333,71 +1372,45 @@ with tab_turni:
                         cella_modificata = (not definitiva) and (val != val_pulito)
 
                         if val in ASSENTE:
-                            vals_m.append(val); vals_p.append(val)
-                            fascia_m.append("assente"); fascia_p.append("assente")
-                            mod_m.append(cella_modificata); mod_p.append(cella_modificata)
+                            style = palette_vista[val]
+                            if cella_modificata:
+                                style = sostituisci_bg(style, EVIDENZIA_GIALLO)
+                            html.append(
+                                f'<td colspan="2" style="border:1px solid #999;padding:4px;'
+                                f'font-weight:bold;border-left:2px solid #000;{style}">{val}</td>'
+                            )
                         else:
                             txt, fascia = fmt_orario_vista(val)
                             if fascia == "mattino":
-                                vals_m.append(txt); vals_p.append("")
-                                fascia_m.append("mattino"); fascia_p.append(None)
-                                mod_m.append(cella_modificata); mod_p.append(False)
+                                style_m = palette_vista["mattino"]
+                                if cella_modificata:
+                                    style_m = sostituisci_bg(style_m, EVIDENZIA_GIALLO)
+                                style_p = ""
+                                txt_m, txt_p = txt, ""
                             elif fascia == "pomeriggio":
-                                vals_m.append(""); vals_p.append(txt)
-                                fascia_m.append(None); fascia_p.append("pomeriggio")
-                                mod_m.append(False); mod_p.append(cella_modificata)
+                                style_p = palette_vista["pomeriggio"]
+                                if cella_modificata:
+                                    style_p = sostituisci_bg(style_p, EVIDENZIA_GIALLO)
+                                style_m = ""
+                                txt_m, txt_p = "", txt
                             else:
-                                vals_m.append(val); vals_p.append("")
-                                fascia_m.append(None); fascia_p.append(None)
-                                mod_m.append(cella_modificata); mod_p.append(False)
-                    vista_data[col_m] = vals_m
-                    vista_data[col_p] = vals_p
-                    fascia_map[col_m] = fascia_m
-                    fascia_map[col_p] = fascia_p
-                    modificato_map[col_m] = mod_m
-                    modificato_map[col_p] = mod_p
+                                style_m, style_p = "", ""
+                                if cella_modificata:
+                                    style_m = f"background-color:{EVIDENZIA_GIALLO};"
+                                txt_m, txt_p = val, ""
 
-                df_vista = pd.DataFrame(vista_data)
-
-                palette_vista = {
-                    "assente_RIPOSO":   "background-color:#f2f2f2;color:#7f7f7f;font-weight:bold;",
-                    "assente_FERIE":    "background-color:#ffe6cc;color:#cc6600;font-weight:bold;",
-                    "assente_MALATTIA": "background-color:#ffcccc;color:#cc0000;font-weight:bold;",
-                    "assente_PERMESSO": "background-color:#e6f2ff;color:#0066cc;font-weight:bold;",
-                    "mattino": "background-color:#e6ffed;color:#1a7f37;font-weight:bold;",
-                    "pomeriggio": "background-color:#fbefff;color:#8250df;font-weight:bold;",
-                }
-
-                EVIDENZIA_GIALLO = "background-color:#FFF59D;"
-
-                def stile_colonna(col):
-                    name = col.name
-                    out = []
-                    for i, v in enumerate(col):
-                        f = fascia_map.get(name, [None]*len(col))[i]
-                        if f == "assente":
-                            base = palette_vista[f"assente_{v}"]
-                        elif f in ("mattino", "pomeriggio"):
-                            base = palette_vista[f]
-                        else:
-                            base = ""
-
-                        if modificato_map.get(name, [False]*len(col))[i]:
-                            # Sovrascrive solo lo sfondo con il giallo, mantiene testo/colore originali
-                            base = EVIDENZIA_GIALLO + ";".join(
-                                p for p in base.split(";") if p and not p.strip().startswith("background-color")
+                            html.append(
+                                f'<td style="border:1px solid #999;padding:4px;'
+                                f'font-weight:bold;border-left:2px solid #000;{style_m}">{txt_m}</td>'
                             )
-                        out.append(base)
-                    return out
+                            html.append(
+                                f'<td style="border:1px solid #999;padding:4px;'
+                                f'font-weight:bold;{style_p}">{txt_p}</td>'
+                            )
+                    html.append('</tr>')
 
-                st.dataframe(
-                    df_vista.style
-                        .apply(stile_colonna, subset=[c for c in df_vista.columns if c != "Dipendente"])
-                        .set_properties(subset=["Dipendente"], **{"font-weight": "bold"}),
-                    width="stretch",
-                    hide_index=True,
-                    height=(len(df_vista) + 1) * 35 + 3
-                )
+                html.append('</table>')
+                st.markdown("".join(html), unsafe_allow_html=True)
 
 
                 st.write("**Stima Volumi Giornalieri:**")
