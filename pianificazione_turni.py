@@ -457,11 +457,8 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
         return tbl
 
     def aggiungi_intestazione(elementi, sottotitolo):
-        stato_label = "DEFINITIVO" if definitiva else "PROVVISORIO"
-        stato_color = "#2E7D32" if definitiva else "#CC6600"
         elementi.append(Paragraph(
-            f"WEEK {week_num} &nbsp;&nbsp; {periodo} "
-            f"&nbsp;&nbsp;&nbsp;&nbsp; <font color='{stato_color}'>{stato_label}</font>",
+            f"WEEK {week_num} &nbsp;&nbsp; {periodo}",
             title_style
         ))
         if sottotitolo:
