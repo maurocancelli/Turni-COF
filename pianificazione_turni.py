@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import os
 import io
+import gspread
+from google.oauth2.service_account import Credentials
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
@@ -78,8 +79,6 @@ with col_codice:
 # ─────────────────────────────────────────────
 # COSTANTI
 # ─────────────────────────────────────────────
-FILE_ANAGRAFICA = "anagrafica_salvata.csv"
-
 GIORNI_LABELS = ["Dom", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
 GIORNI_CHIAVI = ["Dom_P", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
 GIORNI_BASE   = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato"]
@@ -642,69 +641,144 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
     buffer.seek(0)
     return buffer.getvalue()
 
-def file_settimana(anno, week):
-    return f"Turni_W{week:02d}_{anno}.csv"
+# ─────────────────────────────────────────────
+# BACKEND PERSISTENZA: GOOGLE SHEETS
+# ─────────────────────────────────────────────
+SHEET_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
-def file_modifiche(anno, week):
-    return f"Modifiche_W{week:02d}_{anno}.csv"
+WS_ANAGRAFICA = "anagrafica"
+WS_TURNI = "turni"
+WS_MODIFICHE = "modifiche"
+
+COLONNE_TURNI = tuple(["Anno", "Week", "Definitiva", "Dipendente", "Contratto", "Squadra"] + GIORNI_CHIAVI)
+COLONNE_MODIFICHE = ("Anno", "Week", "Dipendente", "Colonna", "Valore")
+COLONNE_ANAGRAFICA = ("Nome", "Contratto", "Squadra", "Riposo 1", "Riposo 2",
+                       "Malattia Fino Al", "Ferie W1", "Ferie W2", "Ferie W3")
+
+@st.cache_resource(show_spinner=False)
+def get_spreadsheet():
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]), scopes=SHEET_SCOPES
+    )
+    gc = gspread.authorize(creds)
+    return gc.open_by_key(st.secrets["sheet"]["id"])
+
+def get_worksheet(nome, colonne):
+    """Ritorna il worksheet con quel nome, creandolo (con header) se non esiste."""
+    sh = get_spreadsheet()
+    try:
+        ws = sh.worksheet(nome)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=nome, rows=200, cols=max(len(colonne), 10))
+        ws.update([list(colonne)], "A1")
+    return ws
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _leggi_worksheet_df(nome, colonne_tuple, _cache_bust=0):
+    """Legge un intero worksheet come DataFrame di stringhe."""
+    colonne = list(colonne_tuple)
+    ws = get_worksheet(nome, colonne)
+    valori = ws.get_all_values()
+    if not valori or len(valori) < 1:
+        return pd.DataFrame(columns=colonne)
+    header = valori[0]
+    righe = valori[1:]
+    df = pd.DataFrame(righe, columns=header)
+    for c in colonne:
+        if c not in df.columns:
+            df[c] = ""
+    return df[colonne]
+
+def _scrivi_worksheet_df(nome, colonne, df):
+    """Sovrascrive interamente un worksheet con il contenuto del DataFrame."""
+    ws = get_worksheet(nome, colonne)
+    df = df.copy()
+    for c in colonne:
+        if c not in df.columns:
+            df[c] = ""
+    df = df[list(colonne)].fillna("").astype(str)
+    valori = [list(colonne)] + df.values.tolist()
+    ws.clear()
+    ws.update(valori, "A1")
+    # Invalida la cache di lettura per questo worksheet
+    st.session_state["_cache_bust"] = st.session_state.get("_cache_bust", 0) + 1
+    _leggi_worksheet_df.clear()
+
+def _cache_bust():
+    return st.session_state.get("_cache_bust", 0)
+
+def rimuovi_settimana_salvata(anno, week):
+    """Rimuove la riga salvata per (anno, week) dal worksheet turni."""
+    tutto = _leggi_worksheet_df(WS_TURNI, COLONNE_TURNI, _cache_bust())
+    if tutto.empty:
+        return
+    tutto = tutto[~((tutto["Anno"] == str(anno)) & (tutto["Week"] == str(week)))]
+    _scrivi_worksheet_df(WS_TURNI, COLONNE_TURNI, tutto)
 
 def is_definitiva(anno, week):
-    fname = file_settimana(anno, week)
-    if not os.path.exists(fname):
+    df = _leggi_worksheet_df(WS_TURNI, COLONNE_TURNI, _cache_bust())
+    if df.empty:
         return False
-    try:
-        df = pd.read_csv(fname, nrows=1)
-        return bool(df.get("_definitiva", pd.Series([False]))[0])
-    except Exception:
+    sel = df[(df["Anno"] == str(anno)) & (df["Week"] == str(week))]
+    if sel.empty:
         return False
+    return bool(sel.iloc[0]["Definitiva"] == "True")
 
 def ha_modifiche_manuali(anno, week):
-    fname = file_modifiche(anno, week)
-    if not os.path.exists(fname):
+    df = _leggi_worksheet_df(WS_MODIFICHE, COLONNE_MODIFICHE, _cache_bust())
+    if df.empty:
         return False
-    try:
-        df = pd.read_csv(fname)
-        return len(df) > 0
-    except Exception:
-        return False
+    sel = df[(df["Anno"] == str(anno)) & (df["Week"] == str(week))]
+    return len(sel) > 0
 
 def salva_settimana(df, anno, week, definitiva):
-    d = df.copy()
-    d["_definitiva"] = definitiva
-    d.to_csv(file_settimana(anno, week), index=False)
+    tutto = _leggi_worksheet_df(WS_TURNI, COLONNE_TURNI, _cache_bust())
+    if not tutto.empty:
+        tutto = tutto[~((tutto["Anno"] == str(anno)) & (tutto["Week"] == str(week)))]
+    nuove = df.copy()
+    nuove["Anno"] = str(anno)
+    nuove["Week"] = str(week)
+    nuove["Definitiva"] = str(bool(definitiva))
+    tutto = pd.concat([tutto, nuove[COLONNE_TURNI]], ignore_index=True)
+    _scrivi_worksheet_df(WS_TURNI, COLONNE_TURNI, tutto)
 
 def carica_settimana(anno, week):
-    fname = file_settimana(anno, week)
-    if not os.path.exists(fname):
+    df = _leggi_worksheet_df(WS_TURNI, COLONNE_TURNI, _cache_bust())
+    if df.empty:
         return None
-    df = pd.read_csv(fname)
-    if "_definitiva" in df.columns:
-        df = df.drop(columns=["_definitiva"])
-    return df
+    sel = df[(df["Anno"] == str(anno)) & (df["Week"] == str(week))].copy()
+    if sel.empty:
+        return None
+    sel = sel.drop(columns=["Anno", "Week", "Definitiva"])
+    sel["Squadra"] = pd.to_numeric(sel["Squadra"], errors="coerce")
+    return sel.reset_index(drop=True)
 
 def carica_modifiche(anno, week):
     """Restituisce dict {(nome, colonna): valore} delle modifiche manuali salvate."""
-    fname = file_modifiche(anno, week)
-    if not os.path.exists(fname):
+    df = _leggi_worksheet_df(WS_MODIFICHE, COLONNE_MODIFICHE, _cache_bust())
+    if df.empty:
         return {}
-    try:
-        df = pd.read_csv(fname)
-        return {
-            (row["Dipendente"], row["Colonna"]): row["Valore"]
-            for _, row in df.iterrows()
-        }
-    except Exception:
-        return {}
+    sel = df[(df["Anno"] == str(anno)) & (df["Week"] == str(week))]
+    return {
+        (row["Dipendente"], row["Colonna"]): row["Valore"]
+        for _, row in sel.iterrows()
+    }
 
 def salva_modifiche(modifiche_dict, anno, week):
     """modifiche_dict: {(nome, colonna): valore}"""
-    if not modifiche_dict:
-        fname = file_modifiche(anno, week)
-        if os.path.exists(fname):
-            os.remove(fname)
-        return
-    rows = [{"Dipendente": n, "Colonna": c, "Valore": v} for (n, c), v in modifiche_dict.items()]
-    pd.DataFrame(rows).to_csv(file_modifiche(anno, week), index=False)
+    tutto = _leggi_worksheet_df(WS_MODIFICHE, COLONNE_MODIFICHE, _cache_bust())
+    if not tutto.empty:
+        tutto = tutto[~((tutto["Anno"] == str(anno)) & (tutto["Week"] == str(week)))]
+    if modifiche_dict:
+        nuove = pd.DataFrame([
+            {"Anno": str(anno), "Week": str(week), "Dipendente": n, "Colonna": c, "Valore": v}
+            for (n, c), v in modifiche_dict.items()
+        ])
+        tutto = pd.concat([tutto, nuove[COLONNE_MODIFICHE]], ignore_index=True)
+    _scrivi_worksheet_df(WS_MODIFICHE, COLONNE_MODIFICHE, tutto)
 
 def calcola_modifiche(df_originale, df_attuale, colonne_assenza_only=None):
     """
@@ -771,19 +845,17 @@ def parse_data_malattia(val):
 # INIT ANAGRAFICA
 # ─────────────────────────────────────────────
 def init_anagrafica():
-    if os.path.exists(FILE_ANAGRAFICA):
-        df = pd.read_csv(FILE_ANAGRAFICA)
-        df = df.where(pd.notnull(df), None)
+    df = _leggi_worksheet_df(WS_ANAGRAFICA, COLONNE_ANAGRAFICA, _cache_bust())
+    if not df.empty:
+        df = df.replace("", None)
         for col in ["Riposo 1", "Riposo 2"]:
-            if col in df.columns:
-                df[col] = df[col].apply(pulisci_riposi)
-        for col in ["Malattia Fino Al", "Ferie W1", "Ferie W2", "Ferie W3"]:
-            if col not in df.columns:
-                df[col] = None
-        for col in ["Dom Scorsa"]:
-            if col in df.columns:
-                df = df.drop(columns=[col])
-        return df
+            df[col] = df[col].apply(pulisci_riposi)
+        for col in ["Squadra", "Ferie W1", "Ferie W2", "Ferie W3"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df[col] = df[col].astype("Int64")
+            if col != "Squadra":
+                df[col] = df[col].astype(object).where(df[col].notna(), None)
+        return df.reset_index(drop=True)
 
     nomi_base = [
         ("MARVIN MENDOZA","FT",1),("MANUEL MENDOZA","FT",2),
@@ -807,14 +879,16 @@ def init_anagrafica():
             "Malattia Fino Al": None,
             "Ferie W1": None, "Ferie W2": None, "Ferie W3": None
         })
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    _scrivi_worksheet_df(WS_ANAGRAFICA, COLONNE_ANAGRAFICA, df)
+    return df
 
 if "df_anagrafica" not in st.session_state:
     st.session_state.df_anagrafica = init_anagrafica()
 
 def salva_anagrafica(df):
     st.session_state.df_anagrafica = df.copy()
-    df.to_csv(FILE_ANAGRAFICA, index=False)
+    _scrivi_worksheet_df(WS_ANAGRAFICA, COLONNE_ANAGRAFICA, df)
 
 # ─────────────────────────────────────────────
 # LEGGI DOM_S DA FILE STORICO (settimana prima della finestra)
@@ -1276,8 +1350,7 @@ with tab_turni:
                     if st.button("🗑️ Rimuovi modifiche manuali (rigenera da zero)",
                                  width="stretch", key=f"reset_mod_{anno_w}_{week_w}"):
                         salva_modifiche({}, anno_w, week_w)
-                        if os.path.exists(file_settimana(anno_w, week_w)):
-                            os.remove(file_settimana(anno_w, week_w))
+                        rimuovi_settimana_salvata(anno_w, week_w)
                         st.success("♻️ Modifiche manuali rimosse, settimana rigenerata.")
                         st.rerun()
 
