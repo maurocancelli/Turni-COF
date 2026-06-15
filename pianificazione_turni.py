@@ -937,10 +937,11 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
                 except Exception:
                     pass
         in_ferie = week_num in ferie_set
+        in_ferie_succ = (week_num + 1) in ferie_set
         data_mal = parse_data_malattia(dip.get("Malattia Fino Al"))
         rows.append({
             "Dipendente": nome, "Contratto": dip["Contratto"], "Squadra": dip["Squadra"],
-            "_in_ferie": in_ferie, "_data_mal": data_mal,
+            "_in_ferie": in_ferie, "_in_ferie_succ": in_ferie_succ, "_data_mal": data_mal,
             "Dom_P": None, "Lun": None, "Mar": None, "Mer": None,
             "Gio": None, "Ven": None, "Sab": None, "Dom_S": None,
         })
@@ -1058,6 +1059,11 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
         elif row["_in_ferie"]:
             # Chi è in ferie: lavora Dom_P (già assegnata sopra), riposa Dom_S
             df.at[idx, "Dom_S"] = "RIPOSO"
+        elif row["_in_ferie_succ"]:
+            # Chi parte in ferie la settimana successiva: questa Dom_S è il suo
+            # ultimo giorno di lavoro prima di partire (= Dom_P della settimana
+            # successiva). Sempre 06:00-13:00* per evidenziarlo, anche in vista.
+            df.at[idx, "Dom_S"] = TURNO_DOMENICA + "*"
         else:
             dom_p_val = str(df.at[idx, "Dom_P"])
             if dom_p_val in ASSENTE:
@@ -1080,7 +1086,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             df.at[idx, "Dom_S"] = TURNO_DOMENICA
             mancanti -= 1
 
-    df = df.drop(columns=["_in_ferie", "_data_mal"])
+    df = df.drop(columns=["_in_ferie", "_in_ferie_succ", "_data_mal"])
     return df[["Dipendente", "Contratto", "Squadra"] + GIORNI_CHIAVI]
 
 # ─────────────────────────────────────────────
