@@ -742,7 +742,7 @@ def salva_settimana(df, anno, week, definitiva):
     nuove["Anno"] = str(anno)
     nuove["Week"] = str(week)
     nuove["Definitiva"] = str(bool(definitiva))
-    tutto = pd.concat([tutto, nuove[COLONNE_TURNI]], ignore_index=True)
+    tutto = pd.concat([tutto, nuove[list(COLONNE_TURNI)]], ignore_index=True)
     _scrivi_worksheet_df(WS_TURNI, COLONNE_TURNI, tutto)
 
 def carica_settimana(anno, week):
@@ -777,7 +777,7 @@ def salva_modifiche(modifiche_dict, anno, week):
             {"Anno": str(anno), "Week": str(week), "Dipendente": n, "Colonna": c, "Valore": v}
             for (n, c), v in modifiche_dict.items()
         ])
-        tutto = pd.concat([tutto, nuove[COLONNE_MODIFICHE]], ignore_index=True)
+        tutto = pd.concat([tutto, nuove[list(COLONNE_MODIFICHE)]], ignore_index=True)
     _scrivi_worksheet_df(WS_MODIFICHE, COLONNE_MODIFICHE, tutto)
 
 def calcola_modifiche(df_originale, df_attuale, colonne_assenza_only=None):
@@ -835,7 +835,7 @@ def parse_data_malattia(val):
     if val is None:
         return None
     try:
-        parsed = pd.to_datetime(val)
+        parsed = pd.to_datetime(val, dayfirst=True)
         return None if pd.isnull(parsed) else parsed.date()
     except Exception:
         return None
@@ -1509,7 +1509,7 @@ with tab_anagrafica:
     st.subheader("👥 Lista Personale e Assenze Programmate")
     df_show = st.session_state.df_anagrafica.copy()
     if "Malattia Fino Al" in df_show.columns:
-        df_show["Malattia Fino Al"] = pd.to_datetime(df_show["Malattia Fino Al"], errors="coerce").dt.date
+        df_show["Malattia Fino Al"] = pd.to_datetime(df_show["Malattia Fino Al"], errors="coerce", dayfirst=True).dt.date
 
     config_anagrafica = {
         "Contratto": st.column_config.SelectboxColumn("Contratto", options=["FT", "PT"], required=True),
