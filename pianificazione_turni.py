@@ -1074,7 +1074,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
     lav = (~df["Dom_S"].isin(ASSENTE)).sum()
     mancanti = TARGET_DOM - lav
     if mancanti > 0:
-        for idx in df[df["Dom_S"] == "RIPOSO"].index:
+        for idx in df[(df["Dom_S"] == "RIPOSO") & (~df["_in_ferie"])].index:
             if mancanti <= 0:
                 break
             df.at[idx, "Dom_S"] = TURNO_DOMENICA
