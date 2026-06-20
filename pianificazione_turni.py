@@ -145,6 +145,24 @@ def traduci_orario_visualizzato(val, tipo_orario):
     tradotto = TRADUZIONE_ORARI[tipo].get(base, base)
     return tradotto + "*" if asterisco else tradotto
 
+def ore_turno(val, tipo_orario):
+    """
+    Restituisce la durata in ore (float) di un turno 'grezzo' per il Tipo
+    Orario del dipendente. Le assenze restituiscono 0.
+    """
+    if val in ASSENTE:
+        return 0.0
+    orario_reale = traduci_orario_visualizzato(val, tipo_orario)
+    base = orario_reale[:-1] if orario_reale.endswith("*") else orario_reale
+    try:
+        inizio, fine = base.split("-")
+        h_in, m_in = (int(x) for x in inizio.split(":"))
+        h_fi, m_fi = (int(x) for x in fine.split(":"))
+    except Exception:
+        return 0.0
+    minuti = (h_fi * 60 + m_fi) - (h_in * 60 + m_in)
+    return max(minuti, 0) / 60.0
+
 # ─────────────────────────────────────────────
 # UTILITY
 # ─────────────────────────────────────────────
@@ -1603,16 +1621,25 @@ with tab_turni:
 
 
                 st.write("**Stima Volumi Giornalieri:**")
+                anagrafica_idx_report = st.session_state.df_anagrafica.set_index("Nome")
                 report = []
                 for chiave in GIORNI_CHIAVI:
-                    op_m = (df_modificato[chiave].isin(["06:00-13:00", "06:00-13:00*", "07:00-14:00"])).sum()
+                    op_m = (df_modificato[chiave].isin(["06:00-13:00", "06:00-13:00*", "07:00-14:00", "07:00-14:00*"])).sum()
                     op_p = (df_modificato[chiave].isin(["12:30-19:30", "13:00-20:00"])).sum()
+                    ore_tot = 0.0
+                    for _, riga in df_modificato.iterrows():
+                        try:
+                            tipo_orario_dip = anagrafica_idx_report.at[riga["Dipendente"], "Tipo Orario"]
+                        except KeyError:
+                            tipo_orario_dip = "Disponibile"
+                        ore_tot += ore_turno(str(riga[chiave]), tipo_orario_dip)
                     report.append({
                         "Giorno": col_labels[chiave],
                         "Mattina (06-13)": int(op_m),
                         "Pomeriggio": int(op_p),
                         "Tot. Operatori": int(op_m + op_p),
-                        "Pezzi Stimati": int((op_m + op_p) * 7 * pieces_ora),
+                        "Totale Ore": round(ore_tot, 2),
+                        "Pezzi Stimati": int(ore_tot * pieces_ora),
                     })
                 df_report = pd.DataFrame(report).set_index("Giorno").T
                 styler = (
