@@ -1642,8 +1642,16 @@ with tab_turni:
                         "Pezzi Stimati": int(ore_tot * pieces_ora),
                     })
                 df_report = pd.DataFrame(report).set_index("Giorno").T
+
+                df_fmt = pd.DataFrame(index=df_report.index, columns=df_report.columns, dtype=object)
+                for idx in df_report.index:
+                    if idx == "Totale Ore":
+                        df_fmt.loc[idx] = [f"{v:.2f}".rstrip("0").rstrip(".") for v in df_report.loc[idx]]
+                    else:
+                        df_fmt.loc[idx] = [f"{int(round(v))}" for v in df_report.loc[idx]]
+
                 styler = (
-                    df_report.style
+                    df_fmt.style
                     .set_table_styles([
                         {"selector": "th", "props": [("text-align", "right"), ("border", "1px solid #333")]},
                         {"selector": "td", "props": [("text-align", "right"), ("border", "1px solid #333")]},
