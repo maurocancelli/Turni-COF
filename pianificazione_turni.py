@@ -276,21 +276,21 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
                 if fascia == "mattino":
                     riga.append(txt)
                     riga.append("")
-                    cell_kind[(r_idx, gi)] = ("mattino", val)
+                    cell_kind[(r_idx, gi)] = ("mattino", txt)
                 elif fascia == "pomeriggio":
                     riga.append("")
                     riga.append(txt)
-                    cell_kind[(r_idx, gi)] = ("pomeriggio", val)
+                    cell_kind[(r_idx, gi)] = ("pomeriggio", txt)
                 else:
                     riga.append(val)
                     riga.append("")
         data_table.append(riga)
 
     n_cols = len(header1)
-    # Colonna mattino piu' stretta, colonna pomeriggio piu' larga (per "12.30-19.30")
-    col_widths = [52*mm]
+    # Colonna mattino piu' larga per ospitare orari contrattuali ridotti (es. 6-12.40)
+    col_widths = [49*mm]
     for _ in giorni_pdf:
-        col_widths += [12*mm, 18*mm]
+        col_widths += [16*mm, 18*mm]
 
     tbl = Table(data_table, colWidths=col_widths, repeatRows=1)
 
@@ -341,10 +341,12 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
             style_cmds.append(("FONTSIZE", (c1, r_idx), (c2, r_idx), 10))
         elif kind == "mattino":
             style_cmds.append(("BACKGROUND", (c1, r_idx), (c1, r_idx), colors.HexColor("#E6FFED")))
-            style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), 11))
+            fs = 11 if len(val) <= 4 else (9.5 if len(val) <= 7 else 8)
+            style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), fs))
         elif kind == "pomeriggio":
             style_cmds.append(("BACKGROUND", (c2, r_idx), (c2, r_idx), colors.HexColor("#FBEFFF")))
-            style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), 9.5))
+            fs = 9.5 if len(val) <= 11 else 8
+            style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), fs))
 
     # Righe alterne bianco/grigio chiarissimo SOLO dove non c'e' gia' un colore assenza
     for r_idx in range(1, len(data_table)):
@@ -374,7 +376,7 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=landscape(A4),
-        leftMargin=2*mm, rightMargin=2*mm, topMargin=6*mm, bottomMargin=6*mm
+        leftMargin=1*mm, rightMargin=1*mm, topMargin=6*mm, bottomMargin=6*mm
     )
 
     styles = getSampleStyleSheet()
@@ -437,9 +439,9 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
         header1.append(f"{nome_g} {giorno_num}")
         header1.append("")
 
-    col_widths = [60*mm]
+    col_widths = [56*mm]
     for _ in giorni_pdf:
-        col_widths += [12*mm, 21.27*mm]
+        col_widths += [14*mm, 20*mm]
 
     anagrafica_idx = st.session_state.df_anagrafica.set_index("Nome")
 
@@ -463,11 +465,11 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
                     if fascia == "mattino":
                         riga.append(txt)
                         riga.append("")
-                        cell_kind[(r_idx, gi)] = ("mattino", val)
+                        cell_kind[(r_idx, gi)] = ("mattino", txt)
                     elif fascia == "pomeriggio":
                         riga.append("")
                         riga.append(txt)
-                        cell_kind[(r_idx, gi)] = ("pomeriggio", val)
+                        cell_kind[(r_idx, gi)] = ("pomeriggio", txt)
                     else:
                         riga.append(val)
                         riga.append("")
@@ -513,10 +515,12 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
                 style_cmds.append(("FONTSIZE", (c1, r_idx), (c2, r_idx), 12))
             elif kind == "mattino":
                 style_cmds.append(("BACKGROUND", (c1, r_idx), (c1, r_idx), colors.HexColor("#E6FFED")))
-                style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), 13))
+                fs = 13 if len(val) <= 4 else (11 if len(val) <= 7 else 9)
+                style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), fs))
             elif kind == "pomeriggio":
                 style_cmds.append(("BACKGROUND", (c2, r_idx), (c2, r_idx), colors.HexColor("#FBEFFF")))
-                style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), 12))
+                fs = 12 if len(val) <= 11 else 10
+                style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), fs))
 
         for r_idx in range(1, len(data_table)):
             if r_idx % 2 == 0:
