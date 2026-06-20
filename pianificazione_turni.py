@@ -107,7 +107,7 @@ ASSENTE = {"RIPOSO", "MALATTIA", "FERIE", "PERMESSO"}
 # La traduzione in orario ridotto avviene SOLO in visualizzazione/export
 # (Vista Colorata, PDF, Excel), in base al "Tipo Orario" del dipendente.
 # ─────────────────────────────────────────────
-TIPO_ORARIO_OPZIONI = ["Disponibile", "Contratto 6,15", "Contratto 6,45"]
+TIPO_ORARIO_OPZIONI = ["Disponibile", "Contratto 6,15", "Contratto 6,40"]
 
 # mappa: (tipo_orario, turno_grezzo_senza_asterisco) -> orario_visualizzato_senza_asterisco
 TRADUZIONE_ORARI = {
@@ -123,11 +123,11 @@ TRADUZIONE_ORARI = {
         "12:30-19:30": "12:30-18:45",
         "13:00-20:00": "13:45-20:00",
     },
-    "Contratto 6,45": {
-        "06:00-13:00": "06:00-12:45",
-        "07:00-14:00": "07:15-14:00",
-        "12:30-19:30": "12:30-19:15",
-        "13:00-20:00": "13:15-20:00",
+    "Contratto 6,40": {
+        "06:00-13:00": "06:00-12:40",
+        "07:00-14:00": "07:20-14:00",
+        "12:30-19:30": "12:30-19:10",
+        "13:00-20:00": "13:20-20:00",
     },
 }
 
