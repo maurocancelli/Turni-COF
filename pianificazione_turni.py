@@ -26,8 +26,8 @@ FOOTER_HTML = """
         .footer-credito {
             position: fixed;
             left: 4px;
-            top: 50%;
-            transform: translateY(-50%) rotate(180deg);
+            bottom: 12px;
+            transform: rotate(180deg);
             writing-mode: vertical-rl;
             font-size: 0.7rem;
             color: #999;
