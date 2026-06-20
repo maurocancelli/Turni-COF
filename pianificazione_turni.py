@@ -25,14 +25,15 @@ FOOTER_HTML = """
     <style>
         .footer-credito {
             position: fixed;
-            bottom: 4px;
-            left: 0;
-            width: 100%;
-            text-align: center;
+            left: 4px;
+            top: 50%;
+            transform: translateY(-50%) rotate(180deg);
+            writing-mode: vertical-rl;
             font-size: 0.7rem;
             color: #999;
             z-index: 100;
             pointer-events: none;
+            white-space: nowrap;
         }
     </style>
     <div class="footer-credito">ideato e realizzato da Mauro Cancelli</div>
