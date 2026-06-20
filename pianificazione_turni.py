@@ -84,7 +84,7 @@ GIORNI_CHIAVI = ["Dom_P", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
 GIORNI_BASE   = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato"]
 OFFSETS       = [-1, 0, 1, 2, 3, 4, 5, 6]
 
-OPZIONI_TURNO  = ["06:00-13:00", "06:00-13:00*", "07:00-14:00", "12:30-19:30", "13:00-20:00", "RIPOSO", "MALATTIA", "FERIE", "PERMESSO"]
+OPZIONI_TURNO  = ["06:00-13:00", "06:00-13:00*", "07:00-14:00", "07:00-14:00*", "12:30-19:30", "13:00-20:00", "RIPOSO", "MALATTIA", "FERIE", "PERMESSO"]
 TARGET_DEFAULT = {"Dom_P": 45, "Lun": 90, "Mar": 75, "Mer": 75, "Gio": 75, "Ven": 90, "Sab": 90, "Dom_S": 45}
 TARGET_DOM     = 10
 
@@ -99,6 +99,51 @@ MATRICE_TURNI = {
 }
 
 ASSENTE = {"RIPOSO", "MALATTIA", "FERIE", "PERMESSO"}
+
+# ─────────────────────────────────────────────
+# TIPO ORARIO (visualizzazione contrattuale ridotta)
+# I valori "grezzi" salvati nelle settimane restano SEMPRE quelli standard
+# (06:00-13:00, 12:30-19:30, 13:00-20:00, 07:00-14:00, con/senza asterisco).
+# La traduzione in orario ridotto avviene SOLO in visualizzazione/export
+# (Vista Colorata, PDF, Excel), in base al "Tipo Orario" del dipendente.
+# ─────────────────────────────────────────────
+TIPO_ORARIO_OPZIONI = ["Standard", "Anziano", "Recente"]
+
+# mappa: (tipo_orario, turno_grezzo_senza_asterisco) -> orario_visualizzato_senza_asterisco
+TRADUZIONE_ORARI = {
+    "Standard": {
+        "06:00-13:00": "06:00-13:00",
+        "07:00-14:00": "07:00-14:00",
+        "12:30-19:30": "12:30-19:30",
+        "13:00-20:00": "13:00-20:00",
+    },
+    "Anziano": {
+        "06:00-13:00": "06:00-12:15",
+        "07:00-14:00": "07:45-14:00",
+        "12:30-19:30": "12:30-18:45",
+        "13:00-20:00": "13:45-20:00",
+    },
+    "Recente": {
+        "06:00-13:00": "06:00-12:45",
+        "07:00-14:00": "07:15-14:00",
+        "12:30-19:30": "12:30-19:15",
+        "13:00-20:00": "13:15-20:00",
+    },
+}
+
+def traduci_orario_visualizzato(val, tipo_orario):
+    """
+    Converte un valore turno 'grezzo' (es. '06:00-13:00*') nell'orario da
+    mostrare in base al Tipo Orario del dipendente (Standard/Anziano/Recente).
+    Le assenze (RIPOSO/FERIE/MALATTIA/PERMESSO) passano invariate.
+    """
+    if val in ASSENTE:
+        return val
+    tipo = tipo_orario if tipo_orario in TRADUZIONE_ORARI else "Standard"
+    asterisco = val.endswith("*")
+    base = val[:-1] if asterisco else val
+    tradotto = TRADUZIONE_ORARI[tipo].get(base, base)
+    return tradotto + "*" if asterisco else tradotto
 
 # ─────────────────────────────────────────────
 # UTILITY
@@ -173,18 +218,26 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
     elementi.append(Spacer(1, 2*mm))
 
     def fmt_orario(val):
-        """Converte '06:00-13:00' -> ('6-13', 'mattino'), '06:00-13:00*' -> ('6-13*','mattino'), '07:00-14:00' -> ('7-14','mattino'), '12:30-19:30' -> ('12.30-19.30','pomeriggio'), '13:00-20:00' -> ('13-20','pomeriggio')"""
-        if val == "06:00-13:00":
-            return "6-13", "mattino"
-        if val == "06:00-13:00*":
-            return "6-13*", "mattino"
-        if val == "07:00-14:00":
-            return "7-14", "mattino"
-        if val == "12:30-19:30":
-            return "12.30-19.30", "pomeriggio"
-        if val == "13:00-20:00":
-            return "13-20", "pomeriggio"
-        return None, None
+        """Converte un orario (standard o tradotto per Tipo Orario) in
+        (testo_breve, fascia). Fascia 'mattino' se inizia prima delle 12."""
+        asterisco = val.endswith("*")
+        base = val[:-1] if asterisco else val
+        try:
+            inizio, fine = base.split("-")
+            h_in, m_in = inizio.split(":")
+            h_fi, m_fi = fine.split(":")
+        except Exception:
+            return None, None
+
+        def fmt_ora(h, m):
+            h = str(int(h))
+            return h if m == "00" else f"{h}.{m}"
+
+        txt = f"{fmt_ora(h_in, m_in)}-{fmt_ora(h_fi, m_fi)}"
+        if asterisco:
+            txt += "*"
+        fascia = "mattino" if int(h_in) < 12 else "pomeriggio"
+        return txt, fascia
 
     # ── Header: nome giorno + data ──
     header1 = ["DIPENDENTE"]
@@ -202,12 +255,18 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
     # Traccia per ogni cella: tipo di contenuto, per colorare dopo
     cell_kind = {}  # (row_idx, col_idx) -> "assente"/"mattino"/"pomeriggio"/"valore_assenza"
 
+    anagrafica_idx = st.session_state.df_anagrafica.set_index("Nome")
+
     for r_idx, (_, row) in enumerate(df.iterrows(), start=1):
         riga = [row["Dipendente"]]
+        try:
+            tipo_orario_dip = anagrafica_idx.at[row["Dipendente"], "Tipo Orario"]
+        except KeyError:
+            tipo_orario_dip = "Standard"
         for gi, chiave in enumerate(giorni_pdf):
             c1 = 1 + gi * 2
             c2 = c1 + 1
-            val = str(row[chiave])
+            val = traduci_orario_visualizzato(str(row[chiave]), tipo_orario_dip)
             if val in ASSENTE:
                 riga.append(val)
                 riga.append("")
@@ -339,17 +398,26 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
                    f"al {dom_s_data.day} {NOMI_MESI[dom_s_data.month]}")
 
     def fmt_orario(val):
-        if val == "06:00-13:00":
-            return "6-13", "mattino"
-        if val == "06:00-13:00*":
-            return "6-13*", "mattino"
-        if val == "07:00-14:00":
-            return "7-14", "mattino"
-        if val == "12:30-19:30":
-            return "12.30-19.30", "pomeriggio"
-        if val == "13:00-20:00":
-            return "13-20", "pomeriggio"
-        return None, None
+        """Converte un orario (standard o tradotto per Tipo Orario) in
+        (testo_breve, fascia). Fascia 'mattino' se inizia prima delle 12."""
+        asterisco = val.endswith("*")
+        base = val[:-1] if asterisco else val
+        try:
+            inizio, fine = base.split("-")
+            h_in, m_in = inizio.split(":")
+            h_fi, m_fi = fine.split(":")
+        except Exception:
+            return None, None
+
+        def fmt_ora(h, m):
+            h = str(int(h))
+            return h if m == "00" else f"{h}.{m}"
+
+        txt = f"{fmt_ora(h_in, m_in)}-{fmt_ora(h_fi, m_fi)}"
+        if asterisco:
+            txt += "*"
+        fascia = "mattino" if int(h_in) < 12 else "pomeriggio"
+        return txt, fascia
 
     palette_assenza = {
         "RIPOSO":   (colors.HexColor("#F2F2F2"), colors.HexColor("#7F7F7F")),
@@ -373,13 +441,19 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
     for _ in giorni_pdf:
         col_widths += [12*mm, 21.27*mm]
 
+    anagrafica_idx = st.session_state.df_anagrafica.set_index("Nome")
+
     def costruisci_tabella(df_gruppo):
         data_table = [header1]
         cell_kind = {}
         for r_idx, (_, row) in enumerate(df_gruppo.iterrows(), start=1):
             riga = [row["Dipendente"]]
+            try:
+                tipo_orario_dip = anagrafica_idx.at[row["Dipendente"], "Tipo Orario"]
+            except KeyError:
+                tipo_orario_dip = "Standard"
             for gi, chiave in enumerate(giorni_pdf):
-                val = str(row[chiave])
+                val = traduci_orario_visualizzato(str(row[chiave]), tipo_orario_dip)
                 if val in ASSENTE:
                     riga.append(val)
                     riga.append("")
@@ -499,15 +573,25 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
     nomi_giorni_excel = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"]
 
     def split_orario(val):
-        """Restituisce (in1, out1, in2, out2) come stringhe, vuote se non applicabile."""
-        mapping = {
-            "06:00-13:00":  ("6", "13", "", ""),
-            "06:00-13:00*": ("6", "13", "", ""),
-            "07:00-14:00":  ("7", "14", "", ""),
-            "12:30-19:30":  ("", "", "12,30", "19,30"),
-            "13:00-20:00":  ("", "", "13", "20"),
-        }
-        return mapping.get(val, ("", "", "", ""))
+        """Restituisce (in1, out1, in2, out2) come stringhe, vuote se non applicabile.
+        Colonne mattino (in1/out1) se l'orario inizia prima delle 12,
+        colonne pomeriggio (in2/out2) altrimenti."""
+        base = val[:-1] if val.endswith("*") else val
+        try:
+            inizio, fine = base.split("-")
+            h_in, m_in = inizio.split(":")
+            h_fi, m_fi = fine.split(":")
+        except Exception:
+            return ("", "", "", "")
+
+        def fmt_ora(h, m):
+            h = str(int(h))
+            return h if m == "00" else f"{h},{m}"
+
+        txt_in, txt_fi = fmt_ora(h_in, m_in), fmt_ora(h_fi, m_fi)
+        if int(h_in) < 12:
+            return (txt_in, txt_fi, "", "")
+        return ("", "", txt_in, txt_fi)
 
     wb = Workbook()
     ws = wb.active
@@ -584,6 +668,8 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
             sub = ws.cell(row=SUBHEADER_ROW, column=cc, value="")
             sub.fill = header_fill
 
+    anagrafica_idx = st.session_state.df_anagrafica.set_index("Nome")
+
     # ── Righe dati ──
     for r_offset, (_, row) in enumerate(df.iterrows()):
         r = DATA_START_ROW + r_offset
@@ -592,9 +678,14 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
         cell_nome.border = border_normal
         cell_nome.alignment = Alignment(horizontal="left", vertical="center")
 
+        try:
+            tipo_orario_dip = anagrafica_idx.at[row["Dipendente"], "Tipo Orario"]
+        except KeyError:
+            tipo_orario_dip = "Standard"
+
         for gi, chiave in enumerate(giorni_excel):
             c1 = 2 + gi * 4
-            val = str(row[chiave])
+            val = traduci_orario_visualizzato(str(row[chiave]), tipo_orario_dip)
 
             if val in ASSENTE:
                 for cc in range(c1, c1 + 4):
@@ -656,7 +747,7 @@ WS_MODIFICHE = "modifiche"
 COLONNE_TURNI = tuple(["Anno", "Week", "Definitiva", "Dipendente", "Contratto", "Squadra"] + GIORNI_CHIAVI)
 COLONNE_MODIFICHE = ("Anno", "Week", "Dipendente", "Colonna", "Valore")
 COLONNE_ANAGRAFICA = ("Nome", "Contratto", "Squadra", "Riposo 1", "Riposo 2",
-                       "Malattia Fino Al", "Ferie W1", "Ferie W2", "Ferie W3")
+                       "Malattia Fino Al", "Ferie W1", "Ferie W2", "Ferie W3", "Tipo Orario")
 
 @st.cache_resource(show_spinner=False)
 def get_spreadsheet():
@@ -855,6 +946,9 @@ def init_anagrafica():
             df[col] = df[col].astype("Int64")
             if col != "Squadra":
                 df[col] = df[col].astype(object).where(df[col].notna(), None)
+        df["Tipo Orario"] = df["Tipo Orario"].apply(
+            lambda v: v if v in TIPO_ORARIO_OPZIONI else "Standard"
+        )
         return df.reset_index(drop=True)
 
     nomi_base = [
@@ -877,7 +971,8 @@ def init_anagrafica():
             "Nome": nome, "Contratto": contratto, "Squadra": sq,
             "Riposo 1": "Nessuno", "Riposo 2": "Nessuno",
             "Malattia Fino Al": None,
-            "Ferie W1": None, "Ferie W2": None, "Ferie W3": None
+            "Ferie W1": None, "Ferie W2": None, "Ferie W3": None,
+            "Tipo Orario": "Standard",
         })
     df = pd.DataFrame(rows)
     _scrivi_worksheet_df(WS_ANAGRAFICA, COLONNE_ANAGRAFICA, df)
@@ -1366,17 +1461,29 @@ with tab_turni:
                 nomi_giorni_vista = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"]
 
                 def fmt_orario_vista(val):
-                    if val == "06:00-13:00":
-                        return "6-13", "mattino"
-                    if val == "06:00-13:00*":
-                        return "6-13*", "mattino"
-                    if val == "07:00-14:00":
-                        return "7-14", "mattino"
-                    if val == "12:30-19:30":
-                        return "12.30-19.30", "pomeriggio"
-                    if val == "13:00-20:00":
-                        return "13-20", "pomeriggio"
-                    return None, None
+                    """
+                    Converte un valore turno (standard o tradotto per Tipo Orario)
+                    in (testo_breve, fascia). Fascia 'mattino' se l'ora di inizio
+                    è prima delle 12, 'pomeriggio' altrimenti.
+                    """
+                    asterisco = val.endswith("*")
+                    base = val[:-1] if asterisco else val
+                    try:
+                        inizio, fine = base.split("-")
+                        h_in, m_in = inizio.split(":")
+                        h_fi, m_fi = fine.split(":")
+                    except Exception:
+                        return None, None
+
+                    def fmt_ora(h, m):
+                        h = str(int(h))
+                        return h if m == "00" else f"{h}.{m}"
+
+                    txt = f"{fmt_ora(h_in, m_in)}-{fmt_ora(h_fi, m_fi)}"
+                    if asterisco:
+                        txt += "*"
+                    fascia = "mattino" if int(h_in) < 12 else "pomeriggio"
+                    return txt, fascia
 
                 df_pulito_corrente = tabelloni_puliti[(anno_w, week_w)]
                 pulito_idx = df_pulito_corrente.set_index("Dipendente")
@@ -1426,9 +1533,15 @@ with tab_turni:
                     )
                 html.append('</tr>')
 
+                anagrafica_idx = st.session_state.df_anagrafica.set_index("Nome")
+
                 # Righe dati
                 for r_idx, riga in df_modificato.iterrows():
                     nome_dip = riga["Dipendente"]
+                    try:
+                        tipo_orario_dip = anagrafica_idx.at[nome_dip, "Tipo Orario"]
+                    except KeyError:
+                        tipo_orario_dip = "Standard"
                     html.append('<tr>')
                     html.append(
                         f'<td style="border:1px solid #999;padding:4px 8px;font-weight:bold;'
@@ -1441,17 +1554,18 @@ with tab_turni:
                         except KeyError:
                             val_pulito = val
                         cella_modificata = (not definitiva) and (val != val_pulito)
+                        val_vis = traduci_orario_visualizzato(val, tipo_orario_dip)
 
-                        if val in ASSENTE:
-                            style = palette_vista[val]
+                        if val_vis in ASSENTE:
+                            style = palette_vista[val_vis]
                             if cella_modificata:
                                 style = sostituisci_bg(style, EVIDENZIA_GIALLO)
                             html.append(
                                 f'<td colspan="2" style="border:1px solid #999;padding:4px;'
-                                f'font-weight:bold;border-left:2px solid #000;{style}">{val}</td>'
+                                f'font-weight:bold;border-left:2px solid #000;{style}">{val_vis}</td>'
                             )
                         else:
-                            txt, fascia = fmt_orario_vista(val)
+                            txt, fascia = fmt_orario_vista(val_vis)
                             if fascia == "mattino":
                                 style_m = palette_vista["mattino"]
                                 if cella_modificata:
@@ -1468,7 +1582,7 @@ with tab_turni:
                                 style_m, style_p = "", ""
                                 if cella_modificata:
                                     style_m = f"background-color:{EVIDENZIA_GIALLO};"
-                                txt_m, txt_p = val, ""
+                                txt_m, txt_p = val_vis, ""
 
                             html.append(
                                 f'<td style="border:1px solid #999;padding:4px;'
@@ -1526,6 +1640,7 @@ with tab_anagrafica:
         "Ferie W1": st.column_config.NumberColumn("Ferie W1 (N. Sett. ISO)", min_value=1, max_value=53),
         "Ferie W2": st.column_config.NumberColumn("Ferie W2 (N. Sett. ISO)", min_value=1, max_value=53),
         "Ferie W3": st.column_config.NumberColumn("Ferie W3 (N. Sett. ISO)", min_value=1, max_value=53),
+        "Tipo Orario": st.column_config.SelectboxColumn("Tipo Orario", options=TIPO_ORARIO_OPZIONI, required=True),
     }
     df_editato = st.data_editor(
         df_show, column_config=config_anagrafica,
@@ -1547,6 +1662,7 @@ with tab_anagrafica:
             nuova_squadra   = st.selectbox("Squadra", [1, 2, 3, 4])
             nuovo_r1 = st.selectbox("Riposo Fisso 1 (PT)", ["Nessuno"] + GIORNI_BASE)
             nuovo_r2 = st.selectbox("Riposo Fisso 2 (PT)", ["Nessuno"] + GIORNI_BASE)
+            nuovo_tipo_orario = st.selectbox("Tipo Orario", TIPO_ORARIO_OPZIONI)
             if st.button("Aggiungi", width="stretch"):
                 if not nuovo_nome.strip():
                     st.error("Inserisci un nome valido!")
@@ -1558,6 +1674,7 @@ with tab_anagrafica:
                         "Riposo 2": nuovo_r2 if nuovo_contratto == "PT" else "Nessuno",
                         "Malattia Fino Al": None,
                         "Ferie W1": None, "Ferie W2": None, "Ferie W3": None,
+                        "Tipo Orario": nuovo_tipo_orario,
                     }
                     nuovo_df = pd.concat([st.session_state.df_anagrafica, pd.DataFrame([nuova_riga])], ignore_index=True)
                     salva_anagrafica(nuovo_df)
