@@ -519,7 +519,7 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
                 style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), fs))
             elif kind == "pomeriggio":
                 style_cmds.append(("BACKGROUND", (c2, r_idx), (c2, r_idx), colors.HexColor("#FBEFFF")))
-                fs = 12 if len(val) <= 11 else 10
+                fs = 12 if len(val) <= 9 else (10 if len(val) <= 11 else 9)
                 style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), fs))
 
         for r_idx in range(1, len(data_table)):
