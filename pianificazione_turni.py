@@ -107,23 +107,23 @@ ASSENTE = {"RIPOSO", "MALATTIA", "FERIE", "PERMESSO"}
 # La traduzione in orario ridotto avviene SOLO in visualizzazione/export
 # (Vista Colorata, PDF, Excel), in base al "Tipo Orario" del dipendente.
 # ─────────────────────────────────────────────
-TIPO_ORARIO_OPZIONI = ["Standard", "Anziano", "Recente"]
+TIPO_ORARIO_OPZIONI = ["Disponibile", "Contratto 6,15", "Contratto 6,45"]
 
 # mappa: (tipo_orario, turno_grezzo_senza_asterisco) -> orario_visualizzato_senza_asterisco
 TRADUZIONE_ORARI = {
-    "Standard": {
+    "Disponibile": {
         "06:00-13:00": "06:00-13:00",
         "07:00-14:00": "07:00-14:00",
         "12:30-19:30": "12:30-19:30",
         "13:00-20:00": "13:00-20:00",
     },
-    "Anziano": {
+    "Contratto 6,15": {
         "06:00-13:00": "06:00-12:15",
         "07:00-14:00": "07:45-14:00",
         "12:30-19:30": "12:30-18:45",
         "13:00-20:00": "13:45-20:00",
     },
-    "Recente": {
+    "Contratto 6,45": {
         "06:00-13:00": "06:00-12:45",
         "07:00-14:00": "07:15-14:00",
         "12:30-19:30": "12:30-19:15",
@@ -139,7 +139,7 @@ def traduci_orario_visualizzato(val, tipo_orario):
     """
     if val in ASSENTE:
         return val
-    tipo = tipo_orario if tipo_orario in TRADUZIONE_ORARI else "Standard"
+    tipo = tipo_orario if tipo_orario in TRADUZIONE_ORARI else "Disponibile"
     asterisco = val.endswith("*")
     base = val[:-1] if asterisco else val
     tradotto = TRADUZIONE_ORARI[tipo].get(base, base)
@@ -262,7 +262,7 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
         try:
             tipo_orario_dip = anagrafica_idx.at[row["Dipendente"], "Tipo Orario"]
         except KeyError:
-            tipo_orario_dip = "Standard"
+            tipo_orario_dip = "Disponibile"
         for gi, chiave in enumerate(giorni_pdf):
             c1 = 1 + gi * 2
             c2 = c1 + 1
@@ -451,7 +451,7 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
             try:
                 tipo_orario_dip = anagrafica_idx.at[row["Dipendente"], "Tipo Orario"]
             except KeyError:
-                tipo_orario_dip = "Standard"
+                tipo_orario_dip = "Disponibile"
             for gi, chiave in enumerate(giorni_pdf):
                 val = traduci_orario_visualizzato(str(row[chiave]), tipo_orario_dip)
                 if val in ASSENTE:
@@ -681,7 +681,7 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
         try:
             tipo_orario_dip = anagrafica_idx.at[row["Dipendente"], "Tipo Orario"]
         except KeyError:
-            tipo_orario_dip = "Standard"
+            tipo_orario_dip = "Disponibile"
 
         for gi, chiave in enumerate(giorni_excel):
             c1 = 2 + gi * 4
@@ -947,7 +947,7 @@ def init_anagrafica():
             if col != "Squadra":
                 df[col] = df[col].astype(object).where(df[col].notna(), None)
         df["Tipo Orario"] = df["Tipo Orario"].apply(
-            lambda v: v if v in TIPO_ORARIO_OPZIONI else "Standard"
+            lambda v: v if v in TIPO_ORARIO_OPZIONI else "Disponibile"
         )
         return df.reset_index(drop=True)
 
@@ -972,7 +972,7 @@ def init_anagrafica():
             "Riposo 1": "Nessuno", "Riposo 2": "Nessuno",
             "Malattia Fino Al": None,
             "Ferie W1": None, "Ferie W2": None, "Ferie W3": None,
-            "Tipo Orario": "Standard",
+            "Tipo Orario": "Disponibile",
         })
     df = pd.DataFrame(rows)
     _scrivi_worksheet_df(WS_ANAGRAFICA, COLONNE_ANAGRAFICA, df)
@@ -1541,7 +1541,7 @@ with tab_turni:
                     try:
                         tipo_orario_dip = anagrafica_idx.at[nome_dip, "Tipo Orario"]
                     except KeyError:
-                        tipo_orario_dip = "Standard"
+                        tipo_orario_dip = "Disponibile"
                     html.append('<tr>')
                     html.append(
                         f'<td style="border:1px solid #999;padding:4px 8px;font-weight:bold;'
