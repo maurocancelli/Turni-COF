@@ -705,6 +705,11 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
             tipo_orario_dip = anagrafica_idx.at[row["Dipendente"], "Tipo Orario"]
         except KeyError:
             tipo_orario_dip = "Disponibile"
+        # Solo nell'export Excel: i dipendenti "Disponibile" vengono mostrati
+        # con gli orari di "Contratto 6,40" (richiesta esplicita, solo visualizzazione,
+        # non tocca il dato salvato né le altre viste/export).
+        if tipo_orario_dip == "Disponibile":
+            tipo_orario_dip = "Contratto 6,40"
 
         for gi, chiave in enumerate(giorni_excel):
             c1 = 2 + gi * 4
