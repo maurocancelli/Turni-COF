@@ -766,11 +766,13 @@ SHEET_SCOPES = [
 WS_ANAGRAFICA = "anagrafica"
 WS_TURNI = "turni"
 WS_MODIFICHE = "modifiche"
+WS_NOTE = "note"
 
 COLONNE_TURNI = tuple(["Anno", "Week", "Definitiva", "Dipendente", "Contratto", "Squadra"] + GIORNI_CHIAVI)
 COLONNE_MODIFICHE = ("Anno", "Week", "Dipendente", "Colonna", "Valore")
 COLONNE_ANAGRAFICA = ("Nome", "Contratto", "Squadra", "Riposo 1", "Riposo 2",
                        "Malattia Fino Al", "Ferie W1", "Ferie W2", "Ferie W3", "Tipo Orario")
+COLONNE_NOTE = ("Anno", "Week", "Testo")
 
 @st.cache_resource(show_spinner=False)
 def get_spreadsheet():
@@ -893,6 +895,26 @@ def salva_modifiche(modifiche_dict, anno, week):
         ])
         tutto = pd.concat([tutto, nuove[list(COLONNE_MODIFICHE)]], ignore_index=True)
     _scrivi_worksheet_df(WS_MODIFICHE, COLONNE_MODIFICHE, tutto)
+
+def carica_nota(anno, week):
+    """Restituisce il testo della nota salvata per (anno, week), o stringa vuota."""
+    df = _leggi_worksheet_df(WS_NOTE, COLONNE_NOTE, _cache_bust())
+    if df.empty:
+        return ""
+    sel = df[(df["Anno"] == str(anno)) & (df["Week"] == str(week))]
+    if sel.empty:
+        return ""
+    return sel.iloc[0]["Testo"]
+
+def salva_nota(anno, week, testo):
+    """Salva (o rimuove, se vuota) la nota per (anno, week)."""
+    tutto = _leggi_worksheet_df(WS_NOTE, COLONNE_NOTE, _cache_bust())
+    if not tutto.empty:
+        tutto = tutto[~((tutto["Anno"] == str(anno)) & (tutto["Week"] == str(week)))]
+    if testo and testo.strip():
+        nuova = pd.DataFrame([{"Anno": str(anno), "Week": str(week), "Testo": testo}])
+        tutto = pd.concat([tutto, nuova[list(COLONNE_NOTE)]], ignore_index=True)
+    _scrivi_worksheet_df(WS_NOTE, COLONNE_NOTE, tutto)
 
 def calcola_modifiche(df_originale, df_attuale, colonne_assenza_only=None):
     """
@@ -1437,6 +1459,9 @@ with tab_turni:
                             salva_modifiche(mod, anno_w, week_w)
                             # Salva anche il risultato corrente (per coerenza catena domeniche)
                             salva_settimana(df_modificato, anno_w, week_w, definitiva=False)
+                        # Salva anche le note della settimana (lette dal widget più sotto in pagina)
+                        nota_da_salvare = st.session_state.get(f"nota_{anno_w}_{week_w}", "")
+                        salva_nota(anno_w, week_w, nota_da_salvare)
                         st.success("✅ Salvato!")
                         st.rerun()
                 with col3:
@@ -1620,6 +1645,16 @@ with tab_turni:
                 html.append('</table>')
                 st.markdown("".join(html), unsafe_allow_html=True)
 
+                st.write("**Note settimana:**")
+                nota_salvata = carica_nota(anno_w, week_w)
+                nota_corrente = st.text_area(
+                    "Note",
+                    value=nota_salvata,
+                    height=100,
+                    key=f"nota_{anno_w}_{week_w}",
+                    label_visibility="collapsed",
+                    placeholder="Scrivi qui eventuali note o valutazioni per questa settimana..."
+                )
 
                 st.write("**Stima Volumi Giornalieri:**")
                 anagrafica_idx_report = st.session_state.df_anagrafica.set_index("Nome")
