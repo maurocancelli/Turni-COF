@@ -1084,9 +1084,11 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
         in_ferie = week_num in ferie_set
         in_ferie_succ = (week_num + 1) in ferie_set
         data_mal = parse_data_malattia(dip.get("Malattia Fino Al"))
+        tipo_orario = str(dip.get("Tipo Orario", "Disponibile") or "Disponibile")
         rows.append({
             "Dipendente": nome, "Contratto": dip["Contratto"], "Squadra": dip["Squadra"],
             "_in_ferie": in_ferie, "_in_ferie_succ": in_ferie_succ, "_data_mal": data_mal,
+            "_tipo_orario": tipo_orario,
             "Dom_P": None, "Lun": None, "Mar": None, "Mer": None,
             "Gio": None, "Ven": None, "Sab": None, "Dom_S": None,
         })
@@ -1107,29 +1109,32 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             else:
                 df.at[idx, chiave] = t_base
     # ── Dom_P: copia esatta della Dom_S della settimana precedente ──
-    # ECCEZIONE: chi è in FERIE questa settimana lavora SEMPRE Dom_P
-    # (è l'ultimo giorno prima di partire), a prescindere dalla rotazione.
+    # ECCEZIONE 1: chi è in FERIE questa settimana lavora SEMPRE Dom_P con asterisco.
+    # ECCEZIONE 2: PT con Contratto 6,15 o 6,40 lavorano SEMPRE Dom_P con asterisco.
+    CONTRATTI_FISSI = {"Contratto 6,15", "Contratto 6,40"}
     for idx, row in df.iterrows():
         data_mal = row["_data_mal"]
         in_mal_dom_p = (data_mal is not None) and (data_dom_p <= data_mal)
+        pt_contrattualizzato = (row["Contratto"] == "PT" and row["_tipo_orario"] in CONTRATTI_FISSI)
         if in_mal_dom_p:
             df.at[idx, "Dom_P"] = "MALATTIA"
         elif row["_in_ferie"]:
-            # Lavora obbligatoriamente la domenica prima di partire in ferie
-            # Asterisco per segnalare che è un turno "forzato" da non confondere
+            df.at[idx, "Dom_P"] = TURNO_DOMENICA + "*"
+        elif pt_contrattualizzato:
+            # PT con contratto ridotto: domenica sempre fissa con asterisco
             df.at[idx, "Dom_P"] = TURNO_DOMENICA + "*"
         else:
             val_prec = dom_s_prec.get(row["Dipendente"], None)
             if val_prec is None:
-                # Nessuna info storica: default mattino
                 df.at[idx, "Dom_P"] = TURNO_DOMENICA
             else:
-                # Copia esatta — stesso valore della Dom_S settimana scorsa
                 df.at[idx, "Dom_P"] = val_prec
 
     # ── Riposi PT (priorità: giorni fissi rispettati sempre) ──
     # Lavora Dom_P → 2 riposi Lun-Sab (entrambi i giorni fissi) = 5 gg lavoro
     # Non lavora Dom_P → 1 solo riposo Lun-Sab (domenica già bruciata) = 5 gg lavoro
+    # ECCEZIONE: PT con Contratto 6,15 o 6,40 lavorano SEMPRE Dom_P e Dom_S,
+    # quindi ricevono SEMPRE 2 riposi fissi Lun-Sab.
     for idx, row in df.iterrows():
         if row["Contratto"] != "PT" or row["_in_ferie"]:
             continue
@@ -1139,6 +1144,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
         if not riposi:
             continue
 
+        pt_contrattualizzato = row["_tipo_orario"] in CONTRATTI_FISSI
         dom_p_val = str(df.at[idx, "Dom_P"])
         ha_lavorato_dom = dom_p_val not in ASSENTE
 
@@ -1150,12 +1156,11 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
 
         if len(riposi) == 2:
             t1, t2 = target_di(riposi[0]), target_di(riposi[1])
-            # giorno col target minore = meno necessario = candidato a riposo prioritario
             r_prim = riposi[0] if t1 <= t2 else riposi[1]
             r_sec  = riposi[1] if t1 <= t2 else riposi[0]
-            # ha lavorato domenica → 2 riposi infrasettimanali (entrambi i giorni fissi)
-            # non ha lavorato domenica → 1 solo riposo (domenica già bruciata)
-            da_app = [r_prim, r_sec] if ha_lavorato_dom else [r_prim]
+            # PT contrattualizzati: sempre 2 riposi fissi (lavorano sempre entrambe le domeniche)
+            # PT standard: 2 riposi se ha lavorato Dom_P, 1 se no
+            da_app = [r_prim, r_sec] if (ha_lavorato_dom or pt_contrattualizzato) else [r_prim]
         else:
             da_app = riposi
 
@@ -1196,26 +1201,24 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             df.at[idx, miglior] = "RIPOSO"
 
     # ── Dom_S: rotazione rispetto a Dom_P della STESSA settimana ──
+    # ECCEZIONE: PT con Contratto 6,15 o 6,40 lavorano SEMPRE Dom_S con asterisco.
     for idx, row in df.iterrows():
         data_mal = row["_data_mal"]
         in_mal_dom_s = (data_mal is not None) and (data_dom_s <= data_mal)
+        pt_contrattualizzato = (row["Contratto"] == "PT" and row["_tipo_orario"] in CONTRATTI_FISSI)
         if in_mal_dom_s:
             df.at[idx, "Dom_S"] = "MALATTIA"
         elif row["_in_ferie"]:
-            # Chi è in ferie: lavora Dom_P (già assegnata sopra), riposa Dom_S
             df.at[idx, "Dom_S"] = "RIPOSO"
+        elif pt_contrattualizzato:
+            df.at[idx, "Dom_S"] = TURNO_DOMENICA + "*"
         elif row["_in_ferie_succ"]:
-            # Chi parte in ferie la settimana successiva: questa Dom_S è il suo
-            # ultimo giorno di lavoro prima di partire (= Dom_P della settimana
-            # successiva). Sempre 06:00-13:00* per evidenziarlo, anche in vista.
             df.at[idx, "Dom_S"] = TURNO_DOMENICA + "*"
         else:
             dom_p_val = str(df.at[idx, "Dom_P"])
             if dom_p_val in ASSENTE:
-                # Non ha lavorato Dom_P → lavora Dom_S
                 df.at[idx, "Dom_S"] = TURNO_DOMENICA
             else:
-                # Ha lavorato Dom_P → riposa Dom_S
                 df.at[idx, "Dom_S"] = "RIPOSO"
 
     # ── Garantisci ALMENO TARGET_DOM lavoratori in Dom_S ──
@@ -1225,13 +1228,19 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
     lav = (~df["Dom_S"].isin(ASSENTE)).sum()
     mancanti = TARGET_DOM - lav
     if mancanti > 0:
-        for idx in df[(df["Dom_S"] == "RIPOSO") & (~df["_in_ferie"])].index:
+        # Escludi chi è in ferie o PT contrattualizzato (già hanno Dom_S fissa)
+        candidati = df[
+            (df["Dom_S"] == "RIPOSO") &
+            (~df["_in_ferie"]) &
+            ~((df["Contratto"] == "PT") & (df["_tipo_orario"].isin(CONTRATTI_FISSI)))
+        ].index
+        for idx in candidati:
             if mancanti <= 0:
                 break
             df.at[idx, "Dom_S"] = TURNO_DOMENICA
             mancanti -= 1
 
-    df = df.drop(columns=["_in_ferie", "_in_ferie_succ", "_data_mal"])
+    df = df.drop(columns=["_in_ferie", "_in_ferie_succ", "_data_mal", "_tipo_orario"])
     return df[["Dipendente", "Contratto", "Squadra"] + GIORNI_CHIAVI]
 
 # ─────────────────────────────────────────────
