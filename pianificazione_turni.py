@@ -597,22 +597,29 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
 
     def split_orario(val):
         """Restituisce (in1, out1, in2, out2) come stringhe, vuote se non applicabile.
-        Colonne mattino (in1/out1) se l'orario inizia prima delle 12,
-        colonne pomeriggio (in2/out2) altrimenti."""
+        Orari arrotondati al quarto d'ora più vicino, formato con punto (es. 19.15)."""
         base = val[:-1] if val.endswith("*") else val
         try:
             inizio, fine = base.split("-")
-            h_in, m_in = inizio.split(":")
-            h_fi, m_fi = fine.split(":")
+            h_in, m_in = int(inizio.split(":")[0]), int(inizio.split(":")[1])
+            h_fi, m_fi = int(fine.split(":")[0]), int(fine.split(":")[1])
         except Exception:
             return ("", "", "", "")
 
-        def fmt_ora(h, m):
-            h = str(int(h))
-            return h if m == "00" else f"{h},{m}"
+        def arrotonda_quarto(h, m):
+            """Arrotonda i minuti al quarto d'ora più vicino (0, 15, 30, 45)."""
+            quarti = round(m / 15) * 15
+            if quarti == 60:
+                h, quarti = h + 1, 0
+            return h, quarti
 
-        txt_in, txt_fi = fmt_ora(h_in, m_in), fmt_ora(h_fi, m_fi)
-        if int(h_in) < 12:
+        def fmt_ora(h, m):
+            h, m = arrotonda_quarto(h, m)
+            return str(h) if m == 0 else f"{h}.{m:02d}"
+
+        txt_in = fmt_ora(h_in, m_in)
+        txt_fi = fmt_ora(h_fi, m_fi)
+        if h_in < 12:
             return (txt_in, txt_fi, "", "")
         return ("", "", txt_in, txt_fi)
 
@@ -719,8 +726,6 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
                 for cc in range(c1, c1 + 4):
                     cell = ws.cell(row=r, column=cc, value="")
                     cell.alignment = center
-                    cell.fill = palette_assenza[val]
-                    cell.font = palette_font[val]
                     cell.border = border_normal
             else:
                 in1, out1, in2, out2 = split_orario(val)
@@ -728,12 +733,6 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
                     cell = ws.cell(row=r, column=c1 + offset_c, value=v)
                     cell.alignment = center
                     cell.border = border_normal
-                    if in1 or out1:
-                        if offset_c in (0, 1):
-                            cell.fill = fill_mattino
-                    if in2 or out2:
-                        if offset_c in (2, 3):
-                            cell.fill = fill_pomeriggio
 
     # ── Larghezze colonne ──
     ws.column_dimensions["A"].width = 24
