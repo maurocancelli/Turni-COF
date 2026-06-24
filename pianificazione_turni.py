@@ -615,7 +615,7 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
 
         def fmt_ora(h, m):
             h, m = arrotonda_quarto(h, m)
-            return str(h) if m == 0 else f"{h}.{m:02d}"
+            return f"{h:02d}.{m:02d}"
 
         txt_in = fmt_ora(h_in, m_in)
         txt_fi = fmt_ora(h_fi, m_fi)
