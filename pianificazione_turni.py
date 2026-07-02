@@ -584,11 +584,14 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
     """
     Genera un file Excel (.xlsx): una riga per dipendente, 4 colonne per ogni
     giorno Lun-Dom: [In1, Out1, In2, Out2].
-      - Turno 06:00-13:00 o 06:00-13:00* o 07:00-14:00 -> In1/Out1 valorizzate
-        (es. "6","13" oppure "7","14"), In2/Out2 vuote.
-      - Turno 12:30-19:30 o 13:00-20:00 -> In1/Out1 vuote, In2/Out2 valorizzate
-        (es. "12,30","19,30" oppure "13","20").
+      - Turni mattino (inizio prima delle 12) -> In1/Out1 valorizzate, In2/Out2 vuote.
+      - Turni pomeriggio -> In1/Out1 vuote, In2/Out2 valorizzate.
+      - Orari sempre in formato HH.MM (punto), arrotondati al quarto d'ora
+        piu' vicino (es. "06.00","12.45").
+      - I dipendenti "Disponibile" vengono mostrati con gli orari di
+        "Contratto 6,40" (solo visualizzazione Excel).
       - Assenze (RIPOSO/FERIE/MALATTIA/PERMESSO) -> tutte 4 le colonne vuote.
+      - Celle dati senza colori (testo semplice).
     Header su due righe: riga 1 = nome giorno (merged su 4 colonne),
     riga 2 = vuota.
     """
@@ -635,21 +638,6 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
     thin = Side(border_style="thin", color="999999")
     thick = Side(border_style="medium", color="000000")
     border_normal = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-    palette_assenza = {
-        "RIPOSO":   PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid"),
-        "FERIE":    PatternFill(start_color="FFE6CC", end_color="FFE6CC", fill_type="solid"),
-        "MALATTIA": PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid"),
-        "PERMESSO": PatternFill(start_color="E6F2FF", end_color="E6F2FF", fill_type="solid"),
-    }
-    palette_font = {
-        "RIPOSO":   Font(color="7F7F7F", bold=True),
-        "FERIE":    Font(color="CC6600", bold=True),
-        "MALATTIA": Font(color="CC0000", bold=True),
-        "PERMESSO": Font(color="0066CC", bold=True),
-    }
-    fill_mattino = PatternFill(start_color="E6FFED", end_color="E6FFED", fill_type="solid")
-    fill_pomeriggio = PatternFill(start_color="FBEFFF", end_color="FBEFFF", fill_type="solid")
 
     # ── Titolo (riga 1, sopra l'header) ──
     dom_p_data = lun_w - datetime.timedelta(days=1)
@@ -975,7 +963,11 @@ def parse_data_malattia(val):
     if val is None:
         return None
     try:
-        parsed = pd.to_datetime(val, dayfirst=True)
+        # Prova prima il formato ISO (come salvato su Sheets), poi dayfirst italiano
+        try:
+            parsed = pd.to_datetime(val, format="%Y-%m-%d")
+        except (ValueError, TypeError):
+            parsed = pd.to_datetime(val, dayfirst=True)
         return None if pd.isnull(parsed) else parsed.date()
     except Exception:
         return None
@@ -1331,6 +1323,22 @@ with tab_turni:
                         val = dom_s_map.get(nome, None)
                         if val is not None:
                             df_pulito.at[ridx, "Dom_P"] = val
+                # ECCEZIONE: la MALATTIA da anagrafica sovrascrive SEMPRE,
+                # anche sulle settimane bloccate come definitive.
+                mal_map = {
+                    d["Nome"]: parse_data_malattia(d.get("Malattia Fino Al"))
+                    for d in st.session_state.df_anagrafica.to_dict("records")
+                    if d.get("Nome")
+                }
+                for ridx, rrow in df_pulito.iterrows():
+                    nome = rrow.get("Dipendente")
+                    data_mal = mal_map.get(nome)
+                    if data_mal is None:
+                        continue
+                    for chiave, offset in zip(GIORNI_CHIAVI, OFFSETS):
+                        data_g = lun_w + datetime.timedelta(days=offset)
+                        if data_g <= data_mal:
+                            df_pulito.at[ridx, chiave] = "MALATTIA"
                 df_con_mod = df_pulito.copy()
             else:
                 # PROVVISORIA (salvata o no): rigenera da zero con l'algoritmo,
