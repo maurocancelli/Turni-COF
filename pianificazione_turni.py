@@ -763,7 +763,7 @@ WS_NOTE = "note"
 COLONNE_TURNI = tuple(["Anno", "Week", "Definitiva", "Dipendente", "Contratto", "Squadra"] + GIORNI_CHIAVI)
 COLONNE_MODIFICHE = ("Anno", "Week", "Dipendente", "Colonna", "Valore")
 COLONNE_ANAGRAFICA = ("Nome", "Contratto", "Squadra", "Riposo 1", "Riposo 2",
-                       "Malattia Fino Al", "Ferie W1", "Ferie W2", "Ferie W3", "Tipo Orario")
+                       "Malattia Dal", "Malattia Fino Al", "Ferie W1", "Ferie W2", "Ferie W3", "Tipo Orario")
 COLONNE_NOTE = ("Anno", "Week", "Testo")
 
 @st.cache_resource(show_spinner=False)
@@ -781,7 +781,7 @@ def get_worksheet(nome, colonne):
         ws = sh.worksheet(nome)
     except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title=nome, rows=200, cols=max(len(colonne), 10))
-        ws.update([list(colonne)], "A1")
+        ws.update([list(colonne)], "A1", value_input_option="RAW")
     return ws
 
 @st.cache_data(ttl=20, show_spinner=False)
@@ -810,7 +810,7 @@ def _scrivi_worksheet_df(nome, colonne, df):
     df = df[list(colonne)].fillna("").astype(str)
     valori = [list(colonne)] + df.values.tolist()
     ws.clear()
-    ws.update(valori, "A1")
+    ws.update(valori, "A1", value_input_option="RAW")
     # Invalida la cache di lettura per questo worksheet
     st.session_state["_cache_bust"] = st.session_state.get("_cache_bust", 0) + 1
     _leggi_worksheet_df.clear()
@@ -963,14 +963,36 @@ def parse_data_malattia(val):
     if val is None:
         return None
     try:
-        # Prova prima il formato ISO (come salvato su Sheets), poi dayfirst italiano
-        try:
-            parsed = pd.to_datetime(val, format="%Y-%m-%d")
-        except (ValueError, TypeError):
-            parsed = pd.to_datetime(val, dayfirst=True)
+        # 1) Formato ISO (come salvato dall'app in modalità RAW)
+        # 2) Formato americano M/D/YYYY (valori già riformattati da Google
+        #    prima del passaggio alla scrittura RAW - transizione)
+        # 3) Fallback: interpretazione italiana giorno/mese
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
+            try:
+                parsed = pd.to_datetime(val, format=fmt)
+                return None if pd.isnull(parsed) else parsed.date()
+            except (ValueError, TypeError):
+                continue
+        parsed = pd.to_datetime(val, dayfirst=True)
         return None if pd.isnull(parsed) else parsed.date()
     except Exception:
         return None
+
+
+def in_malattia(giorno, mal_dal, mal_al):
+    """
+    True se il giorno cade nell'intervallo di malattia [mal_dal, mal_al].
+    mal_al obbligatorio (senza data fine niente malattia);
+    mal_dal opzionale (None = nessun limite inferiore, come il vecchio
+    comportamento "fino al").
+    """
+    if mal_al is None:
+        return False
+    if giorno > mal_al:
+        return False
+    if mal_dal is not None and giorno < mal_dal:
+        return False
+    return True
 
 
 # ─────────────────────────────────────────────
@@ -1011,7 +1033,7 @@ def init_anagrafica():
         rows.append({
             "Nome": nome, "Contratto": contratto, "Squadra": sq,
             "Riposo 1": "Nessuno", "Riposo 2": "Nessuno",
-            "Malattia Fino Al": None,
+            "Malattia Dal": None, "Malattia Fino Al": None,
             "Ferie W1": None, "Ferie W2": None, "Ferie W3": None,
             "Tipo Orario": "Disponibile",
         })
@@ -1074,11 +1096,13 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
                     pass
         in_ferie = week_num in ferie_set
         in_ferie_succ = (week_num + 1) in ferie_set
-        data_mal = parse_data_malattia(dip.get("Malattia Fino Al"))
+        mal_dal = parse_data_malattia(dip.get("Malattia Dal"))
+        mal_al = parse_data_malattia(dip.get("Malattia Fino Al"))
         tipo_orario = str(dip.get("Tipo Orario", "Disponibile") or "Disponibile")
         rows.append({
             "Dipendente": nome, "Contratto": dip["Contratto"], "Squadra": dip["Squadra"],
-            "_in_ferie": in_ferie, "_in_ferie_succ": in_ferie_succ, "_data_mal": data_mal,
+            "_in_ferie": in_ferie, "_in_ferie_succ": in_ferie_succ,
+            "_mal_dal": mal_dal, "_mal_al": mal_al,
             "_tipo_orario": tipo_orario,
             "Dom_P": None, "Lun": None, "Mar": None, "Mer": None,
             "Gio": None, "Ven": None, "Sab": None, "Dom_S": None,
@@ -1092,7 +1116,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
         t_base = turno_infrasettimanale(dip["Squadra"], week_num)
         for chiave, offset in zip(GIORNI_CHIAVI[1:7], OFFSETS[1:7]):
             data_g = lunedi + datetime.timedelta(days=offset)
-            in_mal = (row["_data_mal"] is not None) and (data_g <= row["_data_mal"])
+            in_mal = in_malattia(data_g, row["_mal_dal"], row["_mal_al"])
             if in_mal:
                 df.at[idx, chiave] = "MALATTIA"
             elif row["_in_ferie"]:
@@ -1104,8 +1128,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
     # ECCEZIONE 2: PT con Contratto 6,15 o 6,40 lavorano SEMPRE Dom_P con asterisco.
     CONTRATTI_FISSI = {"Contratto 6,15", "Contratto 6,40"}
     for idx, row in df.iterrows():
-        data_mal = row["_data_mal"]
-        in_mal_dom_p = (data_mal is not None) and (data_dom_p <= data_mal)
+        in_mal_dom_p = in_malattia(data_dom_p, row["_mal_dal"], row["_mal_al"])
         pt_contrattualizzato = (row["Contratto"] == "PT" and row["_tipo_orario"] in CONTRATTI_FISSI)
         if in_mal_dom_p:
             df.at[idx, "Dom_P"] = "MALATTIA"
@@ -1194,8 +1217,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
     # ── Dom_S: rotazione rispetto a Dom_P della STESSA settimana ──
     # ECCEZIONE: PT con Contratto 6,15 o 6,40 lavorano SEMPRE Dom_S con asterisco.
     for idx, row in df.iterrows():
-        data_mal = row["_data_mal"]
-        in_mal_dom_s = (data_mal is not None) and (data_dom_s <= data_mal)
+        in_mal_dom_s = in_malattia(data_dom_s, row["_mal_dal"], row["_mal_al"])
         pt_contrattualizzato = (row["Contratto"] == "PT" and row["_tipo_orario"] in CONTRATTI_FISSI)
         if in_mal_dom_s:
             df.at[idx, "Dom_S"] = "MALATTIA"
@@ -1231,7 +1253,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             df.at[idx, "Dom_S"] = TURNO_DOMENICA
             mancanti -= 1
 
-    df = df.drop(columns=["_in_ferie", "_in_ferie_succ", "_data_mal", "_tipo_orario"])
+    df = df.drop(columns=["_in_ferie", "_in_ferie_succ", "_mal_dal", "_mal_al", "_tipo_orario"])
     return df[["Dipendente", "Contratto", "Squadra"] + GIORNI_CHIAVI]
 
 # ─────────────────────────────────────────────
@@ -1326,18 +1348,19 @@ with tab_turni:
                 # ECCEZIONE: la MALATTIA da anagrafica sovrascrive SEMPRE,
                 # anche sulle settimane bloccate come definitive.
                 mal_map = {
-                    d["Nome"]: parse_data_malattia(d.get("Malattia Fino Al"))
+                    d["Nome"]: (parse_data_malattia(d.get("Malattia Dal")),
+                                parse_data_malattia(d.get("Malattia Fino Al")))
                     for d in st.session_state.df_anagrafica.to_dict("records")
                     if d.get("Nome")
                 }
                 for ridx, rrow in df_pulito.iterrows():
                     nome = rrow.get("Dipendente")
-                    data_mal = mal_map.get(nome)
-                    if data_mal is None:
+                    mal_dal, mal_al = mal_map.get(nome, (None, None))
+                    if mal_al is None:
                         continue
                     for chiave, offset in zip(GIORNI_CHIAVI, OFFSETS):
                         data_g = lun_w + datetime.timedelta(days=offset)
-                        if data_g <= data_mal:
+                        if in_malattia(data_g, mal_dal, mal_al):
                             df_pulito.at[ridx, chiave] = "MALATTIA"
                 df_con_mod = df_pulito.copy()
             else:
@@ -1724,14 +1747,17 @@ with tab_turni:
 with tab_anagrafica:
     st.subheader("👥 Lista Personale e Assenze Programmate")
     df_show = st.session_state.df_anagrafica.copy()
+    if "Malattia Dal" in df_show.columns:
+        df_show["Malattia Dal"] = df_show["Malattia Dal"].apply(parse_data_malattia)
     if "Malattia Fino Al" in df_show.columns:
-        df_show["Malattia Fino Al"] = pd.to_datetime(df_show["Malattia Fino Al"], errors="coerce", dayfirst=True).dt.date
+        df_show["Malattia Fino Al"] = df_show["Malattia Fino Al"].apply(parse_data_malattia)
 
     config_anagrafica = {
         "Contratto": st.column_config.SelectboxColumn("Contratto", options=["FT", "PT"], required=True),
         "Squadra": st.column_config.NumberColumn("Squadra", min_value=1, max_value=4, step=1, required=True),
         "Riposo 1": st.column_config.SelectboxColumn("Riposo 1 (PT)", options=["Nessuno"] + GIORNI_BASE),
         "Riposo 2": st.column_config.SelectboxColumn("Riposo 2 (PT)", options=["Nessuno"] + GIORNI_BASE),
+        "Malattia Dal": st.column_config.DateColumn("Malattia Dal", format="DD/MM/YYYY"),
         "Malattia Fino Al": st.column_config.DateColumn("Malattia Fino Al", format="DD/MM/YYYY"),
         "Ferie W1": st.column_config.NumberColumn("Ferie W1 (N. Sett. ISO)", min_value=1, max_value=53),
         "Ferie W2": st.column_config.NumberColumn("Ferie W2 (N. Sett. ISO)", min_value=1, max_value=53),
@@ -1768,7 +1794,7 @@ with tab_anagrafica:
                         "Squadra": nuova_squadra,
                         "Riposo 1": nuovo_r1 if nuovo_contratto == "PT" else "Nessuno",
                         "Riposo 2": nuovo_r2 if nuovo_contratto == "PT" else "Nessuno",
-                        "Malattia Fino Al": None,
+                        "Malattia Dal": None, "Malattia Fino Al": None,
                         "Ferie W1": None, "Ferie W2": None, "Ferie W3": None,
                         "Tipo Orario": nuovo_tipo_orario,
                     }
