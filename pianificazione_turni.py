@@ -264,6 +264,9 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
             txt += "*"
         fascia = "mattino" if int(h_in) < 12 else "pomeriggio"
         return txt, fascia
+
+    # ── Header: nome giorno + data ──
+    header1 = ["DIPENDENTE"]
     for chiave, nome_g in zip(giorni_pdf, nomi_giorni_pdf):
         lbl = col_labels.get(chiave, nome_g)
         try:
