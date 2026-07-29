@@ -132,6 +132,21 @@ TRADUZIONE_ORARI = {
     },
 }
 
+# Turno mattina della colonna Domenica (Dom_S): per la sola visualizzazione
+# in PDF/Excel, il turno che parte alle 06:00 viene mostrato con un orario di
+# inizio diverso per tipo contratto, ma sempre con fine fissa alle 13:00
+# (il dato reale salvato resta invariato: "06:00-13:00").
+DOMENICA_INIZIO_MATTINA = {
+    "Disponibile":     "6.30",
+    "Contratto 6,15":  "6.45",
+    "Contratto 6,40":  "6.20",
+}
+DOMENICA_INIZIO_MATTINA_HM = {
+    "Disponibile":     (6, 30),
+    "Contratto 6,15":  (6, 45),
+    "Contratto 6,40":  (6, 20),
+}
+
 def traduci_orario_visualizzato(val, tipo_orario):
     """
     Converte un valore turno 'grezzo' (es. '06:00-13:00*') nell'orario da
@@ -236,11 +251,13 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
         elementi.append(Paragraph("PROVVISORIO", status_style_prov))
     elementi.append(Spacer(1, 2*mm))
 
-    def fmt_orario(val, is_domenica=False):
+    def fmt_orario(val, is_domenica=False, tipo_orario="Disponibile"):
         """Converte un orario (standard o tradotto per Tipo Orario) in
         (testo_breve, fascia). Fascia 'mattino' se inizia prima delle 12.
         Per la colonna Domenica (Dom_S), il turno che inizia alle 06:00
-        viene mostrato come '6.30' (solo visualizzazione, orario reale invariato)."""
+        viene mostrato con inizio specifico per tipo contratto (vedi
+        DOMENICA_INIZIO_MATTINA) e fine sempre 13:00 (solo visualizzazione,
+        l'orario reale salvato resta invariato)."""
         asterisco = val.endswith("*")
         base = val[:-1] if asterisco else val
         try:
@@ -255,11 +272,13 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
             return h if m == "00" else f"{h}.{m}"
 
         if is_domenica and h_in == "06" and m_in == "00":
-            testo_inizio = "6.30"
+            testo_inizio = DOMENICA_INIZIO_MATTINA.get(tipo_orario, "6.30")
+            testo_fine = "13"
         else:
             testo_inizio = fmt_ora(h_in, m_in)
+            testo_fine = fmt_ora(h_fi, m_fi)
 
-        txt = f"{testo_inizio}-{fmt_ora(h_fi, m_fi)}"
+        txt = f"{testo_inizio}-{testo_fine}"
         if asterisco:
             txt += "*"
         fascia = "mattino" if int(h_in) < 12 else "pomeriggio"
@@ -298,7 +317,7 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
                 riga.append("")
                 cell_kind[(r_idx, gi)] = ("assente", val)
             else:
-                txt, fascia = fmt_orario(val, is_domenica=(chiave == "Dom_S"))
+                txt, fascia = fmt_orario(val, is_domenica=(chiave == "Dom_S"), tipo_orario=tipo_orario_dip)
                 if fascia == "mattino":
                     riga.append(txt)
                     riga.append("")
@@ -425,11 +444,13 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
         periodo = (f"dal {dom_p_data.day} {NOMI_MESI[dom_p_data.month]} "
                    f"al {dom_s_data.day} {NOMI_MESI[dom_s_data.month]}")
 
-    def fmt_orario(val, is_domenica=False):
+    def fmt_orario(val, is_domenica=False, tipo_orario="Disponibile"):
         """Converte un orario (standard o tradotto per Tipo Orario) in
         (testo_breve, fascia). Fascia 'mattino' se inizia prima delle 12.
         Per la colonna Domenica (Dom_S), il turno che inizia alle 06:00
-        viene mostrato come '6.30' (solo visualizzazione, orario reale invariato)."""
+        viene mostrato con inizio specifico per tipo contratto (vedi
+        DOMENICA_INIZIO_MATTINA) e fine sempre 13:00 (solo visualizzazione,
+        l'orario reale salvato resta invariato)."""
         asterisco = val.endswith("*")
         base = val[:-1] if asterisco else val
         try:
@@ -444,11 +465,13 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
             return h if m == "00" else f"{h}.{m}"
 
         if is_domenica and h_in == "06" and m_in == "00":
-            testo_inizio = "6.30"
+            testo_inizio = DOMENICA_INIZIO_MATTINA.get(tipo_orario, "6.30")
+            testo_fine = "13"
         else:
             testo_inizio = fmt_ora(h_in, m_in)
+            testo_fine = fmt_ora(h_fi, m_fi)
 
-        txt = f"{testo_inizio}-{fmt_ora(h_fi, m_fi)}"
+        txt = f"{testo_inizio}-{testo_fine}"
         if asterisco:
             txt += "*"
         fascia = "mattino" if int(h_in) < 12 else "pomeriggio"
@@ -494,7 +517,7 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
                     riga.append("")
                     cell_kind[(r_idx, gi)] = ("assente", val)
                 else:
-                    txt, fascia = fmt_orario(val, is_domenica=(chiave == "Dom_S"))
+                    txt, fascia = fmt_orario(val, is_domenica=(chiave == "Dom_S"), tipo_orario=tipo_orario_dip)
                     if fascia == "mattino":
                         riga.append(txt)
                         riga.append("")
@@ -612,11 +635,13 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
     giorni_excel = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
     nomi_giorni_excel = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"]
 
-    def split_orario(val, is_domenica=False):
+    def split_orario(val, is_domenica=False, tipo_orario="Disponibile"):
         """Restituisce (in1, out1, in2, out2) come stringhe, vuote se non applicabile.
         Orari arrotondati al quarto d'ora più vicino, formato con punto (es. 19.15).
         Per la colonna Domenica (Dom_S), il turno che inizia alle 06:00 viene
-        mostrato come 06.30 (solo visualizzazione, orario reale invariato)."""
+        mostrato con inizio specifico per tipo contratto (vedi
+        DOMENICA_INIZIO_MATTINA_HM) e fine sempre 13:00, SENZA arrotondamento
+        (solo visualizzazione, l'orario reale salvato resta invariato)."""
         base = val[:-1] if val.endswith("*") else val
         try:
             inizio, fine = base.split("-")
@@ -626,7 +651,10 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
             return ("", "", "", "")
 
         if is_domenica and h_in == 6 and m_in == 0:
-            h_in, m_in = 6, 30
+            h_dom, m_dom = DOMENICA_INIZIO_MATTINA_HM.get(tipo_orario, (6, 30))
+            txt_in = f"{h_dom:02d}.{m_dom:02d}"
+            txt_fi = "13.00"
+            return (txt_in, txt_fi, "", "")
 
         def arrotonda_quarto(h, m):
             """Arrotonda i minuti al quarto d'ora più vicino (0, 15, 30, 45)."""
@@ -735,7 +763,7 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
                     cell.alignment = center
                     cell.border = border_normal
             else:
-                in1, out1, in2, out2 = split_orario(val, is_domenica=(chiave == "Dom_S"))
+                in1, out1, in2, out2 = split_orario(val, is_domenica=(chiave == "Dom_S"), tipo_orario=tipo_orario_dip)
                 for offset_c, v in enumerate([in1, out1, in2, out2]):
                     cell = ws.cell(row=r, column=c1 + offset_c, value=v)
                     cell.alignment = center
