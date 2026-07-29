@@ -1,9 +1,8 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import os
 import io
-import gspread
-from google.oauth2.service_account import Credentials
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
@@ -25,15 +24,14 @@ FOOTER_HTML = """
     <style>
         .footer-credito {
             position: fixed;
-            left: 4px;
-            bottom: 12px;
-            transform: rotate(180deg);
-            writing-mode: vertical-rl;
+            bottom: 4px;
+            left: 0;
+            width: 100%;
+            text-align: center;
             font-size: 0.7rem;
             color: #999;
             z-index: 100;
             pointer-events: none;
-            white-space: nowrap;
         }
     </style>
     <div class="footer-credito">ideato e realizzato da Mauro Cancelli</div>
@@ -80,12 +78,14 @@ with col_codice:
 # ─────────────────────────────────────────────
 # COSTANTI
 # ─────────────────────────────────────────────
+FILE_ANAGRAFICA = "anagrafica_salvata.csv"
+
 GIORNI_LABELS = ["Dom", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
 GIORNI_CHIAVI = ["Dom_P", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
 GIORNI_BASE   = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato"]
 OFFSETS       = [-1, 0, 1, 2, 3, 4, 5, 6]
 
-OPZIONI_TURNO  = ["06:00-13:00", "06:00-13:00*", "07:00-14:00", "07:00-14:00*", "12:30-19:30", "13:00-20:00", "RIPOSO", "MALATTIA", "FERIE", "PERMESSO"]
+OPZIONI_TURNO  = ["06:00-13:00", "06:00-13:00*", "07:00-14:00", "12:30-19:30", "13:00-20:00", "RIPOSO", "MALATTIA", "FERIE", "PERMESSO"]
 TARGET_DEFAULT = {"Dom_P": 45, "Lun": 90, "Mar": 75, "Mer": 75, "Gio": 75, "Ven": 90, "Sab": 90, "Dom_S": 45}
 TARGET_DOM     = 10
 
@@ -100,69 +100,6 @@ MATRICE_TURNI = {
 }
 
 ASSENTE = {"RIPOSO", "MALATTIA", "FERIE", "PERMESSO"}
-
-# ─────────────────────────────────────────────
-# TIPO ORARIO (visualizzazione contrattuale ridotta)
-# I valori "grezzi" salvati nelle settimane restano SEMPRE quelli standard
-# (06:00-13:00, 12:30-19:30, 13:00-20:00, 07:00-14:00, con/senza asterisco).
-# La traduzione in orario ridotto avviene SOLO in visualizzazione/export
-# (Vista Colorata, PDF, Excel), in base al "Tipo Orario" del dipendente.
-# ─────────────────────────────────────────────
-TIPO_ORARIO_OPZIONI = ["Disponibile", "Contratto 6,15", "Contratto 6,40"]
-
-# mappa: (tipo_orario, turno_grezzo_senza_asterisco) -> orario_visualizzato_senza_asterisco
-TRADUZIONE_ORARI = {
-    "Disponibile": {
-        "06:00-13:00": "06:00-13:00",
-        "07:00-14:00": "07:00-14:00",
-        "12:30-19:30": "12:30-19:30",
-        "13:00-20:00": "13:00-20:00",
-    },
-    "Contratto 6,15": {
-        "06:00-13:00": "06:00-12:15",
-        "07:00-14:00": "07:45-14:00",
-        "12:30-19:30": "12:30-18:45",
-        "13:00-20:00": "13:45-20:00",
-    },
-    "Contratto 6,40": {
-        "06:00-13:00": "06:00-12:40",
-        "07:00-14:00": "07:20-14:00",
-        "12:30-19:30": "12:30-19:10",
-        "13:00-20:00": "13:20-20:00",
-    },
-}
-
-def traduci_orario_visualizzato(val, tipo_orario):
-    """
-    Converte un valore turno 'grezzo' (es. '06:00-13:00*') nell'orario da
-    mostrare in base al Tipo Orario del dipendente (Standard/Anziano/Recente).
-    Le assenze (RIPOSO/FERIE/MALATTIA/PERMESSO) passano invariate.
-    """
-    if val in ASSENTE:
-        return val
-    tipo = tipo_orario if tipo_orario in TRADUZIONE_ORARI else "Disponibile"
-    asterisco = val.endswith("*")
-    base = val[:-1] if asterisco else val
-    tradotto = TRADUZIONE_ORARI[tipo].get(base, base)
-    return tradotto + "*" if asterisco else tradotto
-
-def ore_turno(val, tipo_orario):
-    """
-    Restituisce la durata in ore (float) di un turno 'grezzo' per il Tipo
-    Orario del dipendente. Le assenze restituiscono 0.
-    """
-    if val in ASSENTE:
-        return 0.0
-    orario_reale = traduci_orario_visualizzato(val, tipo_orario)
-    base = orario_reale[:-1] if orario_reale.endswith("*") else orario_reale
-    try:
-        inizio, fine = base.split("-")
-        h_in, m_in = (int(x) for x in inizio.split(":"))
-        h_fi, m_fi = (int(x) for x in fine.split(":"))
-    except Exception:
-        return 0.0
-    minuti = (h_fi * 60 + m_fi) - (h_in * 60 + m_in)
-    return max(minuti, 0) / 60.0
 
 # ─────────────────────────────────────────────
 # UTILITY
@@ -236,27 +173,21 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
         elementi.append(Paragraph("PROVVISORIO", status_style_prov))
     elementi.append(Spacer(1, 2*mm))
 
-    def fmt_orario(val):
-        """Converte un orario (standard o tradotto per Tipo Orario) in
-        (testo_breve, fascia). Fascia 'mattino' se inizia prima delle 12."""
-        asterisco = val.endswith("*")
-        base = val[:-1] if asterisco else val
-        try:
-            inizio, fine = base.split("-")
-            h_in, m_in = inizio.split(":")
-            h_fi, m_fi = fine.split(":")
-        except Exception:
-            return None, None
-
-        def fmt_ora(h, m):
-            h = str(int(h))
-            return h if m == "00" else f"{h}.{m}"
-
-        txt = f"{fmt_ora(h_in, m_in)}-{fmt_ora(h_fi, m_fi)}"
-        if asterisco:
-            txt += "*"
-        fascia = "mattino" if int(h_in) < 12 else "pomeriggio"
-        return txt, fascia
+    def fmt_orario(val, is_domenica=False):
+        """Converte '06:00-13:00' -> ('6-13', 'mattino') nei giorni feriali, ma
+        ('6.30-13', 'mattino') per la colonna Domenica (Dom_S). Analogamente
+        per l'asterisco. '07:00-14:00' -> ('7-14','mattino'), '12:30-19:30' -> ('12.30-19.30','pomeriggio'), '13:00-20:00' -> ('13-20','pomeriggio')"""
+        if val == "06:00-13:00":
+            return ("6.30-13" if is_domenica else "6-13"), "mattino"
+        if val == "06:00-13:00*":
+            return ("6.30-13*" if is_domenica else "6-13*"), "mattino"
+        if val == "07:00-14:00":
+            return "7-14", "mattino"
+        if val == "12:30-19:30":
+            return "12.30-19.30", "pomeriggio"
+        if val == "13:00-20:00":
+            return "13-20", "pomeriggio"
+        return None, None
 
     # ── Header: nome giorno + data ──
     header1 = ["DIPENDENTE"]
@@ -274,42 +205,36 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
     # Traccia per ogni cella: tipo di contenuto, per colorare dopo
     cell_kind = {}  # (row_idx, col_idx) -> "assente"/"mattino"/"pomeriggio"/"valore_assenza"
 
-    anagrafica_idx = st.session_state.df_anagrafica.set_index("Nome")
-
     for r_idx, (_, row) in enumerate(df.iterrows(), start=1):
         riga = [row["Dipendente"]]
-        try:
-            tipo_orario_dip = anagrafica_idx.at[row["Dipendente"], "Tipo Orario"]
-        except KeyError:
-            tipo_orario_dip = "Disponibile"
         for gi, chiave in enumerate(giorni_pdf):
             c1 = 1 + gi * 2
             c2 = c1 + 1
-            val = traduci_orario_visualizzato(str(row[chiave]), tipo_orario_dip)
+            val = str(row[chiave])
             if val in ASSENTE:
                 riga.append(val)
                 riga.append("")
                 cell_kind[(r_idx, gi)] = ("assente", val)
             else:
-                txt, fascia = fmt_orario(val)
+                txt, fascia = fmt_orario(val, is_domenica=(chiave == "Dom_S"))
                 if fascia == "mattino":
                     riga.append(txt)
                     riga.append("")
-                    cell_kind[(r_idx, gi)] = ("mattino", txt)
+                    cell_kind[(r_idx, gi)] = ("mattino", val)
                 elif fascia == "pomeriggio":
                     riga.append("")
                     riga.append(txt)
-                    cell_kind[(r_idx, gi)] = ("pomeriggio", txt)
+                    cell_kind[(r_idx, gi)] = ("pomeriggio", val)
                 else:
                     riga.append(val)
                     riga.append("")
         data_table.append(riga)
 
     n_cols = len(header1)
-    # Colonna mattino piu' larga per ospitare orari contrattuali ridotti (es. 6-12.40)
-    col_widths = [49*mm]
+    # Colonna mattino piu' stretta, colonna pomeriggio piu' larga (per "12.30-19.30")
+    col_widths = [52*mm]
     for _ in giorni_pdf:
-        col_widths += [16*mm, 18*mm]
+        col_widths += [12*mm, 18*mm]
 
     tbl = Table(data_table, colWidths=col_widths, repeatRows=1)
 
@@ -360,12 +285,10 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
             style_cmds.append(("FONTSIZE", (c1, r_idx), (c2, r_idx), 10))
         elif kind == "mattino":
             style_cmds.append(("BACKGROUND", (c1, r_idx), (c1, r_idx), colors.HexColor("#E6FFED")))
-            fs = 11 if len(val) <= 4 else (9.5 if len(val) <= 7 else 8)
-            style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), fs))
+            style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), 11))
         elif kind == "pomeriggio":
             style_cmds.append(("BACKGROUND", (c2, r_idx), (c2, r_idx), colors.HexColor("#FBEFFF")))
-            fs = 9.5 if len(val) <= 11 else 8
-            style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), fs))
+            style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), 9.5))
 
     # Righe alterne bianco/grigio chiarissimo SOLO dove non c'e' gia' un colore assenza
     for r_idx in range(1, len(data_table)):
@@ -395,7 +318,7 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=landscape(A4),
-        leftMargin=1*mm, rightMargin=1*mm, topMargin=6*mm, bottomMargin=6*mm
+        leftMargin=2*mm, rightMargin=2*mm, topMargin=6*mm, bottomMargin=6*mm
     )
 
     styles = getSampleStyleSheet()
@@ -418,27 +341,18 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
         periodo = (f"dal {dom_p_data.day} {NOMI_MESI[dom_p_data.month]} "
                    f"al {dom_s_data.day} {NOMI_MESI[dom_s_data.month]}")
 
-    def fmt_orario(val):
-        """Converte un orario (standard o tradotto per Tipo Orario) in
-        (testo_breve, fascia). Fascia 'mattino' se inizia prima delle 12."""
-        asterisco = val.endswith("*")
-        base = val[:-1] if asterisco else val
-        try:
-            inizio, fine = base.split("-")
-            h_in, m_in = inizio.split(":")
-            h_fi, m_fi = fine.split(":")
-        except Exception:
-            return None, None
-
-        def fmt_ora(h, m):
-            h = str(int(h))
-            return h if m == "00" else f"{h}.{m}"
-
-        txt = f"{fmt_ora(h_in, m_in)}-{fmt_ora(h_fi, m_fi)}"
-        if asterisco:
-            txt += "*"
-        fascia = "mattino" if int(h_in) < 12 else "pomeriggio"
-        return txt, fascia
+    def fmt_orario(val, is_domenica=False):
+        if val == "06:00-13:00":
+            return ("6.30-13" if is_domenica else "6-13"), "mattino"
+        if val == "06:00-13:00*":
+            return ("6.30-13*" if is_domenica else "6-13*"), "mattino"
+        if val == "07:00-14:00":
+            return "7-14", "mattino"
+        if val == "12:30-19:30":
+            return "12.30-19.30", "pomeriggio"
+        if val == "13:00-20:00":
+            return "13-20", "pomeriggio"
+        return None, None
 
     palette_assenza = {
         "RIPOSO":   (colors.HexColor("#F2F2F2"), colors.HexColor("#7F7F7F")),
@@ -458,37 +372,31 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
         header1.append(f"{nome_g} {giorno_num}")
         header1.append("")
 
-    col_widths = [56*mm]
+    col_widths = [60*mm]
     for _ in giorni_pdf:
-        col_widths += [14*mm, 20*mm]
-
-    anagrafica_idx = st.session_state.df_anagrafica.set_index("Nome")
+        col_widths += [12*mm, 21.27*mm]
 
     def costruisci_tabella(df_gruppo):
         data_table = [header1]
         cell_kind = {}
         for r_idx, (_, row) in enumerate(df_gruppo.iterrows(), start=1):
             riga = [row["Dipendente"]]
-            try:
-                tipo_orario_dip = anagrafica_idx.at[row["Dipendente"], "Tipo Orario"]
-            except KeyError:
-                tipo_orario_dip = "Disponibile"
             for gi, chiave in enumerate(giorni_pdf):
-                val = traduci_orario_visualizzato(str(row[chiave]), tipo_orario_dip)
+                val = str(row[chiave])
                 if val in ASSENTE:
                     riga.append(val)
                     riga.append("")
                     cell_kind[(r_idx, gi)] = ("assente", val)
                 else:
-                    txt, fascia = fmt_orario(val)
+                    txt, fascia = fmt_orario(val, is_domenica=(chiave == "Dom_S"))
                     if fascia == "mattino":
                         riga.append(txt)
                         riga.append("")
-                        cell_kind[(r_idx, gi)] = ("mattino", txt)
+                        cell_kind[(r_idx, gi)] = ("mattino", val)
                     elif fascia == "pomeriggio":
                         riga.append("")
                         riga.append(txt)
-                        cell_kind[(r_idx, gi)] = ("pomeriggio", txt)
+                        cell_kind[(r_idx, gi)] = ("pomeriggio", val)
                     else:
                         riga.append(val)
                         riga.append("")
@@ -534,12 +442,10 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
                 style_cmds.append(("FONTSIZE", (c1, r_idx), (c2, r_idx), 12))
             elif kind == "mattino":
                 style_cmds.append(("BACKGROUND", (c1, r_idx), (c1, r_idx), colors.HexColor("#E6FFED")))
-                fs = 13 if len(val) <= 4 else (11 if len(val) <= 7 else 9)
-                style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), fs))
+                style_cmds.append(("FONTSIZE", (c1, r_idx), (c1, r_idx), 13))
             elif kind == "pomeriggio":
                 style_cmds.append(("BACKGROUND", (c2, r_idx), (c2, r_idx), colors.HexColor("#FBEFFF")))
-                fs = 12 if len(val) <= 9 else (10 if len(val) <= 11 else 9)
-                style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), fs))
+                style_cmds.append(("FONTSIZE", (c2, r_idx), (c2, r_idx), 12))
 
         for r_idx in range(1, len(data_table)):
             if r_idx % 2 == 0:
@@ -553,8 +459,11 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
         return tbl
 
     def aggiungi_intestazione(elementi, sottotitolo):
+        stato_label = "DEFINITIVO" if definitiva else "PROVVISORIO"
+        stato_color = "#2E7D32" if definitiva else "#CC6600"
         elementi.append(Paragraph(
-            f"WEEK {week_num} &nbsp;&nbsp; {periodo}",
+            f"WEEK {week_num} &nbsp;&nbsp; {periodo} "
+            f"&nbsp;&nbsp;&nbsp;&nbsp; <font color='{stato_color}'>{stato_label}</font>",
             title_style
         ))
         if sottotitolo:
@@ -584,47 +493,27 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
     """
     Genera un file Excel (.xlsx): una riga per dipendente, 4 colonne per ogni
     giorno Lun-Dom: [In1, Out1, In2, Out2].
-      - Turni mattino (inizio prima delle 12) -> In1/Out1 valorizzate, In2/Out2 vuote.
-      - Turni pomeriggio -> In1/Out1 vuote, In2/Out2 valorizzate.
-      - Orari sempre in formato HH.MM (punto), arrotondati al quarto d'ora
-        piu' vicino (es. "06.00","12.45").
-      - I dipendenti "Disponibile" vengono mostrati con gli orari di
-        "Contratto 6,40" (solo visualizzazione Excel).
+      - Turno 06:00-13:00 o 06:00-13:00* o 07:00-14:00 -> In1/Out1 valorizzate
+        (es. "6","13" oppure "7","14"), In2/Out2 vuote.
+      - Turno 12:30-19:30 o 13:00-20:00 -> In1/Out1 vuote, In2/Out2 valorizzate
+        (es. "12,30","19,30" oppure "13","20").
       - Assenze (RIPOSO/FERIE/MALATTIA/PERMESSO) -> tutte 4 le colonne vuote.
-      - Celle dati senza colori (testo semplice).
     Header su due righe: riga 1 = nome giorno (merged su 4 colonne),
     riga 2 = vuota.
     """
     giorni_excel = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
     nomi_giorni_excel = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"]
 
-    def split_orario(val):
-        """Restituisce (in1, out1, in2, out2) come stringhe, vuote se non applicabile.
-        Orari arrotondati al quarto d'ora più vicino, formato con punto (es. 19.15)."""
-        base = val[:-1] if val.endswith("*") else val
-        try:
-            inizio, fine = base.split("-")
-            h_in, m_in = int(inizio.split(":")[0]), int(inizio.split(":")[1])
-            h_fi, m_fi = int(fine.split(":")[0]), int(fine.split(":")[1])
-        except Exception:
-            return ("", "", "", "")
-
-        def arrotonda_quarto(h, m):
-            """Arrotonda i minuti al quarto d'ora più vicino (0, 15, 30, 45)."""
-            quarti = round(m / 15) * 15
-            if quarti == 60:
-                h, quarti = h + 1, 0
-            return h, quarti
-
-        def fmt_ora(h, m):
-            h, m = arrotonda_quarto(h, m)
-            return f"{h:02d}.{m:02d}"
-
-        txt_in = fmt_ora(h_in, m_in)
-        txt_fi = fmt_ora(h_fi, m_fi)
-        if h_in < 12:
-            return (txt_in, txt_fi, "", "")
-        return ("", "", txt_in, txt_fi)
+    def split_orario(val, is_domenica=False):
+        """Restituisce (in1, out1, in2, out2) come stringhe, vuote se non applicabile."""
+        mapping = {
+            "06:00-13:00":  (("6,30" if is_domenica else "6"), "13", "", ""),
+            "06:00-13:00*": (("6,30" if is_domenica else "6"), "13", "", ""),
+            "07:00-14:00":  ("7", "14", "", ""),
+            "12:30-19:30":  ("", "", "12,30", "19,30"),
+            "13:00-20:00":  ("", "", "13", "20"),
+        }
+        return mapping.get(val, ("", "", "", ""))
 
     wb = Workbook()
     ws = wb.active
@@ -638,6 +527,21 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
     thin = Side(border_style="thin", color="999999")
     thick = Side(border_style="medium", color="000000")
     border_normal = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    palette_assenza = {
+        "RIPOSO":   PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid"),
+        "FERIE":    PatternFill(start_color="FFE6CC", end_color="FFE6CC", fill_type="solid"),
+        "MALATTIA": PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid"),
+        "PERMESSO": PatternFill(start_color="E6F2FF", end_color="E6F2FF", fill_type="solid"),
+    }
+    palette_font = {
+        "RIPOSO":   Font(color="7F7F7F", bold=True),
+        "FERIE":    Font(color="CC6600", bold=True),
+        "MALATTIA": Font(color="CC0000", bold=True),
+        "PERMESSO": Font(color="0066CC", bold=True),
+    }
+    fill_mattino = PatternFill(start_color="E6FFED", end_color="E6FFED", fill_type="solid")
+    fill_pomeriggio = PatternFill(start_color="FBEFFF", end_color="FBEFFF", fill_type="solid")
 
     # ── Titolo (riga 1, sopra l'header) ──
     dom_p_data = lun_w - datetime.timedelta(days=1)
@@ -686,8 +590,6 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
             sub = ws.cell(row=SUBHEADER_ROW, column=cc, value="")
             sub.fill = header_fill
 
-    anagrafica_idx = st.session_state.df_anagrafica.set_index("Nome")
-
     # ── Righe dati ──
     for r_offset, (_, row) in enumerate(df.iterrows()):
         r = DATA_START_ROW + r_offset
@@ -696,31 +598,29 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
         cell_nome.border = border_normal
         cell_nome.alignment = Alignment(horizontal="left", vertical="center")
 
-        try:
-            tipo_orario_dip = anagrafica_idx.at[row["Dipendente"], "Tipo Orario"]
-        except KeyError:
-            tipo_orario_dip = "Disponibile"
-        # Solo nell'export Excel: i dipendenti "Disponibile" vengono mostrati
-        # con gli orari di "Contratto 6,40" (richiesta esplicita, solo visualizzazione,
-        # non tocca il dato salvato né le altre viste/export).
-        if tipo_orario_dip == "Disponibile":
-            tipo_orario_dip = "Contratto 6,40"
-
         for gi, chiave in enumerate(giorni_excel):
             c1 = 2 + gi * 4
-            val = traduci_orario_visualizzato(str(row[chiave]), tipo_orario_dip)
+            val = str(row[chiave])
 
             if val in ASSENTE:
                 for cc in range(c1, c1 + 4):
                     cell = ws.cell(row=r, column=cc, value="")
                     cell.alignment = center
+                    cell.fill = palette_assenza[val]
+                    cell.font = palette_font[val]
                     cell.border = border_normal
             else:
-                in1, out1, in2, out2 = split_orario(val)
+                in1, out1, in2, out2 = split_orario(val, is_domenica=(chiave == "Dom_S"))
                 for offset_c, v in enumerate([in1, out1, in2, out2]):
                     cell = ws.cell(row=r, column=c1 + offset_c, value=v)
                     cell.alignment = center
                     cell.border = border_normal
+                    if in1 or out1:
+                        if offset_c in (0, 1):
+                            cell.fill = fill_mattino
+                    if in2 or out2:
+                        if offset_c in (2, 3):
+                            cell.fill = fill_pomeriggio
 
     # ── Larghezze colonne ──
     ws.column_dimensions["A"].width = 24
@@ -747,166 +647,69 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
     buffer.seek(0)
     return buffer.getvalue()
 
-# ─────────────────────────────────────────────
-# BACKEND PERSISTENZA: GOOGLE SHEETS
-# ─────────────────────────────────────────────
-SHEET_SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
+def file_settimana(anno, week):
+    return f"Turni_W{week:02d}_{anno}.csv"
 
-WS_ANAGRAFICA = "anagrafica"
-WS_TURNI = "turni"
-WS_MODIFICHE = "modifiche"
-WS_NOTE = "note"
-
-COLONNE_TURNI = tuple(["Anno", "Week", "Definitiva", "Dipendente", "Contratto", "Squadra"] + GIORNI_CHIAVI)
-COLONNE_MODIFICHE = ("Anno", "Week", "Dipendente", "Colonna", "Valore")
-COLONNE_ANAGRAFICA = ("Nome", "Contratto", "Squadra", "Riposo 1", "Riposo 2",
-                       "Malattia Dal", "Malattia Fino Al", "Ferie W1", "Ferie W2", "Ferie W3", "Tipo Orario")
-COLONNE_NOTE = ("Anno", "Week", "Testo")
-
-@st.cache_resource(show_spinner=False)
-def get_spreadsheet():
-    creds = Credentials.from_service_account_info(
-        dict(st.secrets["gcp_service_account"]), scopes=SHEET_SCOPES
-    )
-    gc = gspread.authorize(creds)
-    return gc.open_by_key(st.secrets["sheet"]["id"])
-
-def get_worksheet(nome, colonne):
-    """Ritorna il worksheet con quel nome, creandolo (con header) se non esiste."""
-    sh = get_spreadsheet()
-    try:
-        ws = sh.worksheet(nome)
-    except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title=nome, rows=200, cols=max(len(colonne), 10))
-        ws.update([list(colonne)], "A1", value_input_option="RAW")
-    return ws
-
-@st.cache_data(ttl=20, show_spinner=False)
-def _leggi_worksheet_df(nome, colonne_tuple, _cache_bust=0):
-    """Legge un intero worksheet come DataFrame di stringhe."""
-    colonne = list(colonne_tuple)
-    ws = get_worksheet(nome, colonne)
-    valori = ws.get_all_values()
-    if not valori or len(valori) < 1:
-        return pd.DataFrame(columns=colonne)
-    header = valori[0]
-    righe = valori[1:]
-    df = pd.DataFrame(righe, columns=header)
-    for c in colonne:
-        if c not in df.columns:
-            df[c] = ""
-    return df[colonne]
-
-def _scrivi_worksheet_df(nome, colonne, df):
-    """Sovrascrive interamente un worksheet con il contenuto del DataFrame."""
-    ws = get_worksheet(nome, colonne)
-    df = df.copy()
-    for c in colonne:
-        if c not in df.columns:
-            df[c] = ""
-    df = df[list(colonne)].fillna("").astype(str)
-    valori = [list(colonne)] + df.values.tolist()
-    ws.clear()
-    ws.update(valori, "A1", value_input_option="RAW")
-    # Invalida la cache di lettura per questo worksheet
-    st.session_state["_cache_bust"] = st.session_state.get("_cache_bust", 0) + 1
-    _leggi_worksheet_df.clear()
-
-def _cache_bust():
-    return st.session_state.get("_cache_bust", 0)
-
-def rimuovi_settimana_salvata(anno, week):
-    """Rimuove la riga salvata per (anno, week) dal worksheet turni."""
-    tutto = _leggi_worksheet_df(WS_TURNI, COLONNE_TURNI, _cache_bust())
-    if tutto.empty:
-        return
-    tutto = tutto[~((tutto["Anno"] == str(anno)) & (tutto["Week"] == str(week)))]
-    _scrivi_worksheet_df(WS_TURNI, COLONNE_TURNI, tutto)
+def file_modifiche(anno, week):
+    return f"Modifiche_W{week:02d}_{anno}.csv"
 
 def is_definitiva(anno, week):
-    df = _leggi_worksheet_df(WS_TURNI, COLONNE_TURNI, _cache_bust())
-    if df.empty:
+    fname = file_settimana(anno, week)
+    if not os.path.exists(fname):
         return False
-    sel = df[(df["Anno"] == str(anno)) & (df["Week"] == str(week))]
-    if sel.empty:
+    try:
+        df = pd.read_csv(fname, nrows=1)
+        return bool(df.get("_definitiva", pd.Series([False]))[0])
+    except Exception:
         return False
-    return bool(sel.iloc[0]["Definitiva"] == "True")
 
 def ha_modifiche_manuali(anno, week):
-    df = _leggi_worksheet_df(WS_MODIFICHE, COLONNE_MODIFICHE, _cache_bust())
-    if df.empty:
+    fname = file_modifiche(anno, week)
+    if not os.path.exists(fname):
         return False
-    sel = df[(df["Anno"] == str(anno)) & (df["Week"] == str(week))]
-    return len(sel) > 0
+    try:
+        df = pd.read_csv(fname)
+        return len(df) > 0
+    except Exception:
+        return False
 
 def salva_settimana(df, anno, week, definitiva):
-    tutto = _leggi_worksheet_df(WS_TURNI, COLONNE_TURNI, _cache_bust())
-    if not tutto.empty:
-        tutto = tutto[~((tutto["Anno"] == str(anno)) & (tutto["Week"] == str(week)))]
-    nuove = df.copy()
-    nuove["Anno"] = str(anno)
-    nuove["Week"] = str(week)
-    nuove["Definitiva"] = str(bool(definitiva))
-    tutto = pd.concat([tutto, nuove[list(COLONNE_TURNI)]], ignore_index=True)
-    _scrivi_worksheet_df(WS_TURNI, COLONNE_TURNI, tutto)
+    d = df.copy()
+    d["_definitiva"] = definitiva
+    d.to_csv(file_settimana(anno, week), index=False)
 
 def carica_settimana(anno, week):
-    df = _leggi_worksheet_df(WS_TURNI, COLONNE_TURNI, _cache_bust())
-    if df.empty:
+    fname = file_settimana(anno, week)
+    if not os.path.exists(fname):
         return None
-    sel = df[(df["Anno"] == str(anno)) & (df["Week"] == str(week))].copy()
-    if sel.empty:
-        return None
-    sel = sel.drop(columns=["Anno", "Week", "Definitiva"])
-    sel["Squadra"] = pd.to_numeric(sel["Squadra"], errors="coerce")
-    return sel.reset_index(drop=True)
+    df = pd.read_csv(fname)
+    if "_definitiva" in df.columns:
+        df = df.drop(columns=["_definitiva"])
+    return df
 
 def carica_modifiche(anno, week):
     """Restituisce dict {(nome, colonna): valore} delle modifiche manuali salvate."""
-    df = _leggi_worksheet_df(WS_MODIFICHE, COLONNE_MODIFICHE, _cache_bust())
-    if df.empty:
+    fname = file_modifiche(anno, week)
+    if not os.path.exists(fname):
         return {}
-    sel = df[(df["Anno"] == str(anno)) & (df["Week"] == str(week))]
-    return {
-        (row["Dipendente"], row["Colonna"]): row["Valore"]
-        for _, row in sel.iterrows()
-    }
+    try:
+        df = pd.read_csv(fname)
+        return {
+            (row["Dipendente"], row["Colonna"]): row["Valore"]
+            for _, row in df.iterrows()
+        }
+    except Exception:
+        return {}
 
 def salva_modifiche(modifiche_dict, anno, week):
     """modifiche_dict: {(nome, colonna): valore}"""
-    tutto = _leggi_worksheet_df(WS_MODIFICHE, COLONNE_MODIFICHE, _cache_bust())
-    if not tutto.empty:
-        tutto = tutto[~((tutto["Anno"] == str(anno)) & (tutto["Week"] == str(week)))]
-    if modifiche_dict:
-        nuove = pd.DataFrame([
-            {"Anno": str(anno), "Week": str(week), "Dipendente": n, "Colonna": c, "Valore": v}
-            for (n, c), v in modifiche_dict.items()
-        ])
-        tutto = pd.concat([tutto, nuove[list(COLONNE_MODIFICHE)]], ignore_index=True)
-    _scrivi_worksheet_df(WS_MODIFICHE, COLONNE_MODIFICHE, tutto)
-
-def carica_nota(anno, week):
-    """Restituisce il testo della nota salvata per (anno, week), o stringa vuota."""
-    df = _leggi_worksheet_df(WS_NOTE, COLONNE_NOTE, _cache_bust())
-    if df.empty:
-        return ""
-    sel = df[(df["Anno"] == str(anno)) & (df["Week"] == str(week))]
-    if sel.empty:
-        return ""
-    return sel.iloc[0]["Testo"]
-
-def salva_nota(anno, week, testo):
-    """Salva (o rimuove, se vuota) la nota per (anno, week)."""
-    tutto = _leggi_worksheet_df(WS_NOTE, COLONNE_NOTE, _cache_bust())
-    if not tutto.empty:
-        tutto = tutto[~((tutto["Anno"] == str(anno)) & (tutto["Week"] == str(week)))]
-    if testo and testo.strip():
-        nuova = pd.DataFrame([{"Anno": str(anno), "Week": str(week), "Testo": testo}])
-        tutto = pd.concat([tutto, nuova[list(COLONNE_NOTE)]], ignore_index=True)
-    _scrivi_worksheet_df(WS_NOTE, COLONNE_NOTE, tutto)
+    if not modifiche_dict:
+        fname = file_modifiche(anno, week)
+        if os.path.exists(fname):
+            os.remove(fname)
+        return
+    rows = [{"Dipendente": n, "Colonna": c, "Valore": v} for (n, c), v in modifiche_dict.items()]
+    pd.DataFrame(rows).to_csv(file_modifiche(anno, week), index=False)
 
 def calcola_modifiche(df_originale, df_attuale, colonne_assenza_only=None):
     """
@@ -963,56 +766,29 @@ def parse_data_malattia(val):
     if val is None:
         return None
     try:
-        # 1) Formato ISO (come salvato dall'app in modalità RAW)
-        # 2) Formato americano M/D/YYYY (valori già riformattati da Google
-        #    prima del passaggio alla scrittura RAW - transizione)
-        # 3) Fallback: interpretazione italiana giorno/mese
-        for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
-            try:
-                parsed = pd.to_datetime(val, format=fmt)
-                return None if pd.isnull(parsed) else parsed.date()
-            except (ValueError, TypeError):
-                continue
-        parsed = pd.to_datetime(val, dayfirst=True)
+        parsed = pd.to_datetime(val)
         return None if pd.isnull(parsed) else parsed.date()
     except Exception:
         return None
-
-
-def in_malattia(giorno, mal_dal, mal_al):
-    """
-    True se il giorno cade nell'intervallo di malattia [mal_dal, mal_al].
-    mal_al obbligatorio (senza data fine niente malattia);
-    mal_dal opzionale (None = nessun limite inferiore, come il vecchio
-    comportamento "fino al").
-    """
-    if mal_al is None:
-        return False
-    if giorno > mal_al:
-        return False
-    if mal_dal is not None and giorno < mal_dal:
-        return False
-    return True
 
 
 # ─────────────────────────────────────────────
 # INIT ANAGRAFICA
 # ─────────────────────────────────────────────
 def init_anagrafica():
-    df = _leggi_worksheet_df(WS_ANAGRAFICA, COLONNE_ANAGRAFICA, _cache_bust())
-    if not df.empty:
-        df = df.replace("", None)
+    if os.path.exists(FILE_ANAGRAFICA):
+        df = pd.read_csv(FILE_ANAGRAFICA)
+        df = df.where(pd.notnull(df), None)
         for col in ["Riposo 1", "Riposo 2"]:
-            df[col] = df[col].apply(pulisci_riposi)
-        for col in ["Squadra", "Ferie W1", "Ferie W2", "Ferie W3"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-            df[col] = df[col].astype("Int64")
-            if col != "Squadra":
-                df[col] = df[col].astype(object).where(df[col].notna(), None)
-        df["Tipo Orario"] = df["Tipo Orario"].apply(
-            lambda v: v if v in TIPO_ORARIO_OPZIONI else "Disponibile"
-        )
-        return df.reset_index(drop=True)
+            if col in df.columns:
+                df[col] = df[col].apply(pulisci_riposi)
+        for col in ["Malattia Fino Al", "Ferie W1", "Ferie W2", "Ferie W3"]:
+            if col not in df.columns:
+                df[col] = None
+        for col in ["Dom Scorsa"]:
+            if col in df.columns:
+                df = df.drop(columns=[col])
+        return df
 
     nomi_base = [
         ("MARVIN MENDOZA","FT",1),("MANUEL MENDOZA","FT",2),
@@ -1033,20 +809,17 @@ def init_anagrafica():
         rows.append({
             "Nome": nome, "Contratto": contratto, "Squadra": sq,
             "Riposo 1": "Nessuno", "Riposo 2": "Nessuno",
-            "Malattia Dal": None, "Malattia Fino Al": None,
-            "Ferie W1": None, "Ferie W2": None, "Ferie W3": None,
-            "Tipo Orario": "Disponibile",
+            "Malattia Fino Al": None,
+            "Ferie W1": None, "Ferie W2": None, "Ferie W3": None
         })
-    df = pd.DataFrame(rows)
-    _scrivi_worksheet_df(WS_ANAGRAFICA, COLONNE_ANAGRAFICA, df)
-    return df
+    return pd.DataFrame(rows)
 
 if "df_anagrafica" not in st.session_state:
     st.session_state.df_anagrafica = init_anagrafica()
 
 def salva_anagrafica(df):
     st.session_state.df_anagrafica = df.copy()
-    _scrivi_worksheet_df(WS_ANAGRAFICA, COLONNE_ANAGRAFICA, df)
+    df.to_csv(FILE_ANAGRAFICA, index=False)
 
 # ─────────────────────────────────────────────
 # LEGGI DOM_S DA FILE STORICO (settimana prima della finestra)
@@ -1095,15 +868,10 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
                 except Exception:
                     pass
         in_ferie = week_num in ferie_set
-        in_ferie_succ = (week_num + 1) in ferie_set
-        mal_dal = parse_data_malattia(dip.get("Malattia Dal"))
-        mal_al = parse_data_malattia(dip.get("Malattia Fino Al"))
-        tipo_orario = str(dip.get("Tipo Orario", "Disponibile") or "Disponibile")
+        data_mal = parse_data_malattia(dip.get("Malattia Fino Al"))
         rows.append({
             "Dipendente": nome, "Contratto": dip["Contratto"], "Squadra": dip["Squadra"],
-            "_in_ferie": in_ferie, "_in_ferie_succ": in_ferie_succ,
-            "_mal_dal": mal_dal, "_mal_al": mal_al,
-            "_tipo_orario": tipo_orario,
+            "_in_ferie": in_ferie, "_data_mal": data_mal,
             "Dom_P": None, "Lun": None, "Mar": None, "Mer": None,
             "Gio": None, "Ven": None, "Sab": None, "Dom_S": None,
         })
@@ -1116,7 +884,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
         t_base = turno_infrasettimanale(dip["Squadra"], week_num)
         for chiave, offset in zip(GIORNI_CHIAVI[1:7], OFFSETS[1:7]):
             data_g = lunedi + datetime.timedelta(days=offset)
-            in_mal = in_malattia(data_g, row["_mal_dal"], row["_mal_al"])
+            in_mal = (row["_data_mal"] is not None) and (data_g <= row["_data_mal"])
             if in_mal:
                 df.at[idx, chiave] = "MALATTIA"
             elif row["_in_ferie"]:
@@ -1124,31 +892,29 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             else:
                 df.at[idx, chiave] = t_base
     # ── Dom_P: copia esatta della Dom_S della settimana precedente ──
-    # ECCEZIONE 1: chi è in FERIE questa settimana lavora SEMPRE Dom_P con asterisco.
-    # ECCEZIONE 2: PT con Contratto 6,15 o 6,40 lavorano SEMPRE Dom_P con asterisco.
-    CONTRATTI_FISSI = {"Contratto 6,15", "Contratto 6,40"}
+    # ECCEZIONE: chi è in FERIE questa settimana lavora SEMPRE Dom_P
+    # (è l'ultimo giorno prima di partire), a prescindere dalla rotazione.
     for idx, row in df.iterrows():
-        in_mal_dom_p = in_malattia(data_dom_p, row["_mal_dal"], row["_mal_al"])
-        pt_contrattualizzato = (row["Contratto"] == "PT" and row["_tipo_orario"] in CONTRATTI_FISSI)
+        data_mal = row["_data_mal"]
+        in_mal_dom_p = (data_mal is not None) and (data_dom_p <= data_mal)
         if in_mal_dom_p:
             df.at[idx, "Dom_P"] = "MALATTIA"
         elif row["_in_ferie"]:
-            df.at[idx, "Dom_P"] = TURNO_DOMENICA + "*"
-        elif pt_contrattualizzato:
-            # PT con contratto ridotto: domenica sempre fissa con asterisco
+            # Lavora obbligatoriamente la domenica prima di partire in ferie
+            # Asterisco per segnalare che è un turno "forzato" da non confondere
             df.at[idx, "Dom_P"] = TURNO_DOMENICA + "*"
         else:
             val_prec = dom_s_prec.get(row["Dipendente"], None)
             if val_prec is None:
+                # Nessuna info storica: default mattino
                 df.at[idx, "Dom_P"] = TURNO_DOMENICA
             else:
+                # Copia esatta — stesso valore della Dom_S settimana scorsa
                 df.at[idx, "Dom_P"] = val_prec
 
     # ── Riposi PT (priorità: giorni fissi rispettati sempre) ──
     # Lavora Dom_P → 2 riposi Lun-Sab (entrambi i giorni fissi) = 5 gg lavoro
     # Non lavora Dom_P → 1 solo riposo Lun-Sab (domenica già bruciata) = 5 gg lavoro
-    # ECCEZIONE: PT con Contratto 6,15 o 6,40 lavorano SEMPRE Dom_P e Dom_S,
-    # quindi ricevono SEMPRE 2 riposi fissi Lun-Sab.
     for idx, row in df.iterrows():
         if row["Contratto"] != "PT" or row["_in_ferie"]:
             continue
@@ -1158,7 +924,6 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
         if not riposi:
             continue
 
-        pt_contrattualizzato = row["_tipo_orario"] in CONTRATTI_FISSI
         dom_p_val = str(df.at[idx, "Dom_P"])
         ha_lavorato_dom = dom_p_val not in ASSENTE
 
@@ -1170,11 +935,12 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
 
         if len(riposi) == 2:
             t1, t2 = target_di(riposi[0]), target_di(riposi[1])
+            # giorno col target minore = meno necessario = candidato a riposo prioritario
             r_prim = riposi[0] if t1 <= t2 else riposi[1]
             r_sec  = riposi[1] if t1 <= t2 else riposi[0]
-            # PT contrattualizzati: sempre 2 riposi fissi (lavorano sempre entrambe le domeniche)
-            # PT standard: 2 riposi se ha lavorato Dom_P, 1 se no
-            da_app = [r_prim, r_sec] if (ha_lavorato_dom or pt_contrattualizzato) else [r_prim]
+            # ha lavorato domenica → 2 riposi infrasettimanali (entrambi i giorni fissi)
+            # non ha lavorato domenica → 1 solo riposo (domenica già bruciata)
+            da_app = [r_prim, r_sec] if ha_lavorato_dom else [r_prim]
         else:
             da_app = riposi
 
@@ -1215,23 +981,21 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             df.at[idx, miglior] = "RIPOSO"
 
     # ── Dom_S: rotazione rispetto a Dom_P della STESSA settimana ──
-    # ECCEZIONE: PT con Contratto 6,15 o 6,40 lavorano SEMPRE Dom_S con asterisco.
     for idx, row in df.iterrows():
-        in_mal_dom_s = in_malattia(data_dom_s, row["_mal_dal"], row["_mal_al"])
-        pt_contrattualizzato = (row["Contratto"] == "PT" and row["_tipo_orario"] in CONTRATTI_FISSI)
+        data_mal = row["_data_mal"]
+        in_mal_dom_s = (data_mal is not None) and (data_dom_s <= data_mal)
         if in_mal_dom_s:
             df.at[idx, "Dom_S"] = "MALATTIA"
         elif row["_in_ferie"]:
+            # Chi è in ferie: lavora Dom_P (già assegnata sopra), riposa Dom_S
             df.at[idx, "Dom_S"] = "RIPOSO"
-        elif pt_contrattualizzato:
-            df.at[idx, "Dom_S"] = TURNO_DOMENICA + "*"
-        elif row["_in_ferie_succ"]:
-            df.at[idx, "Dom_S"] = TURNO_DOMENICA + "*"
         else:
             dom_p_val = str(df.at[idx, "Dom_P"])
             if dom_p_val in ASSENTE:
+                # Non ha lavorato Dom_P → lavora Dom_S
                 df.at[idx, "Dom_S"] = TURNO_DOMENICA
             else:
+                # Ha lavorato Dom_P → riposa Dom_S
                 df.at[idx, "Dom_S"] = "RIPOSO"
 
     # ── Garantisci ALMENO TARGET_DOM lavoratori in Dom_S ──
@@ -1241,19 +1005,13 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
     lav = (~df["Dom_S"].isin(ASSENTE)).sum()
     mancanti = TARGET_DOM - lav
     if mancanti > 0:
-        # Escludi chi è in ferie o PT contrattualizzato (già hanno Dom_S fissa)
-        candidati = df[
-            (df["Dom_S"] == "RIPOSO") &
-            (~df["_in_ferie"]) &
-            ~((df["Contratto"] == "PT") & (df["_tipo_orario"].isin(CONTRATTI_FISSI)))
-        ].index
-        for idx in candidati:
+        for idx in df[df["Dom_S"] == "RIPOSO"].index:
             if mancanti <= 0:
                 break
             df.at[idx, "Dom_S"] = TURNO_DOMENICA
             mancanti -= 1
 
-    df = df.drop(columns=["_in_ferie", "_in_ferie_succ", "_mal_dal", "_mal_al", "_tipo_orario"])
+    df = df.drop(columns=["_in_ferie", "_data_mal"])
     return df[["Dipendente", "Contratto", "Squadra"] + GIORNI_CHIAVI]
 
 # ─────────────────────────────────────────────
@@ -1345,23 +1103,6 @@ with tab_turni:
                         val = dom_s_map.get(nome, None)
                         if val is not None:
                             df_pulito.at[ridx, "Dom_P"] = val
-                # ECCEZIONE: la MALATTIA da anagrafica sovrascrive SEMPRE,
-                # anche sulle settimane bloccate come definitive.
-                mal_map = {
-                    d["Nome"]: (parse_data_malattia(d.get("Malattia Dal")),
-                                parse_data_malattia(d.get("Malattia Fino Al")))
-                    for d in st.session_state.df_anagrafica.to_dict("records")
-                    if d.get("Nome")
-                }
-                for ridx, rrow in df_pulito.iterrows():
-                    nome = rrow.get("Dipendente")
-                    mal_dal, mal_al = mal_map.get(nome, (None, None))
-                    if mal_al is None:
-                        continue
-                    for chiave, offset in zip(GIORNI_CHIAVI, OFFSETS):
-                        data_g = lun_w + datetime.timedelta(days=offset)
-                        if in_malattia(data_g, mal_dal, mal_al):
-                            df_pulito.at[ridx, chiave] = "MALATTIA"
                 df_con_mod = df_pulito.copy()
             else:
                 # PROVVISORIA (salvata o no): rigenera da zero con l'algoritmo,
@@ -1503,9 +1244,6 @@ with tab_turni:
                             salva_modifiche(mod, anno_w, week_w)
                             # Salva anche il risultato corrente (per coerenza catena domeniche)
                             salva_settimana(df_modificato, anno_w, week_w, definitiva=False)
-                        # Salva anche le note della settimana (lette dal widget più sotto in pagina)
-                        nota_da_salvare = st.session_state.get(f"nota_{anno_w}_{week_w}", "")
-                        salva_nota(anno_w, week_w, nota_da_salvare)
                         st.success("✅ Salvato!")
                         st.rerun()
                 with col3:
@@ -1543,7 +1281,8 @@ with tab_turni:
                     if st.button("🗑️ Rimuovi modifiche manuali (rigenera da zero)",
                                  width="stretch", key=f"reset_mod_{anno_w}_{week_w}"):
                         salva_modifiche({}, anno_w, week_w)
-                        rimuovi_settimana_salvata(anno_w, week_w)
+                        if os.path.exists(file_settimana(anno_w, week_w)):
+                            os.remove(file_settimana(anno_w, week_w))
                         st.success("♻️ Modifiche manuali rimosse, settimana rigenerata.")
                         st.rerun()
 
@@ -1553,29 +1292,17 @@ with tab_turni:
                 nomi_giorni_vista = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"]
 
                 def fmt_orario_vista(val):
-                    """
-                    Converte un valore turno (standard o tradotto per Tipo Orario)
-                    in (testo_breve, fascia). Fascia 'mattino' se l'ora di inizio
-                    è prima delle 12, 'pomeriggio' altrimenti.
-                    """
-                    asterisco = val.endswith("*")
-                    base = val[:-1] if asterisco else val
-                    try:
-                        inizio, fine = base.split("-")
-                        h_in, m_in = inizio.split(":")
-                        h_fi, m_fi = fine.split(":")
-                    except Exception:
-                        return None, None
-
-                    def fmt_ora(h, m):
-                        h = str(int(h))
-                        return h if m == "00" else f"{h}.{m}"
-
-                    txt = f"{fmt_ora(h_in, m_in)}-{fmt_ora(h_fi, m_fi)}"
-                    if asterisco:
-                        txt += "*"
-                    fascia = "mattino" if int(h_in) < 12 else "pomeriggio"
-                    return txt, fascia
+                    if val == "06:00-13:00":
+                        return "6-13", "mattino"
+                    if val == "06:00-13:00*":
+                        return "6-13*", "mattino"
+                    if val == "07:00-14:00":
+                        return "7-14", "mattino"
+                    if val == "12:30-19:30":
+                        return "12.30-19.30", "pomeriggio"
+                    if val == "13:00-20:00":
+                        return "13-20", "pomeriggio"
+                    return None, None
 
                 df_pulito_corrente = tabelloni_puliti[(anno_w, week_w)]
                 pulito_idx = df_pulito_corrente.set_index("Dipendente")
@@ -1625,15 +1352,9 @@ with tab_turni:
                     )
                 html.append('</tr>')
 
-                anagrafica_idx = st.session_state.df_anagrafica.set_index("Nome")
-
                 # Righe dati
                 for r_idx, riga in df_modificato.iterrows():
                     nome_dip = riga["Dipendente"]
-                    try:
-                        tipo_orario_dip = anagrafica_idx.at[nome_dip, "Tipo Orario"]
-                    except KeyError:
-                        tipo_orario_dip = "Disponibile"
                     html.append('<tr>')
                     html.append(
                         f'<td style="border:1px solid #999;padding:4px 8px;font-weight:bold;'
@@ -1646,18 +1367,17 @@ with tab_turni:
                         except KeyError:
                             val_pulito = val
                         cella_modificata = (not definitiva) and (val != val_pulito)
-                        val_vis = traduci_orario_visualizzato(val, tipo_orario_dip)
 
-                        if val_vis in ASSENTE:
-                            style = palette_vista[val_vis]
+                        if val in ASSENTE:
+                            style = palette_vista[val]
                             if cella_modificata:
                                 style = sostituisci_bg(style, EVIDENZIA_GIALLO)
                             html.append(
                                 f'<td colspan="2" style="border:1px solid #999;padding:4px;'
-                                f'font-weight:bold;border-left:2px solid #000;{style}">{val_vis}</td>'
+                                f'font-weight:bold;border-left:2px solid #000;{style}">{val}</td>'
                             )
                         else:
-                            txt, fascia = fmt_orario_vista(val_vis)
+                            txt, fascia = fmt_orario_vista(val)
                             if fascia == "mattino":
                                 style_m = palette_vista["mattino"]
                                 if cella_modificata:
@@ -1674,7 +1394,7 @@ with tab_turni:
                                 style_m, style_p = "", ""
                                 if cella_modificata:
                                     style_m = f"background-color:{EVIDENZIA_GIALLO};"
-                                txt_m, txt_p = val_vis, ""
+                                txt_m, txt_p = val, ""
 
                             html.append(
                                 f'<td style="border:1px solid #999;padding:4px;'
@@ -1689,49 +1409,22 @@ with tab_turni:
                 html.append('</table>')
                 st.markdown("".join(html), unsafe_allow_html=True)
 
-                st.write("**Note settimana:**")
-                nota_salvata = carica_nota(anno_w, week_w)
-                nota_corrente = st.text_area(
-                    "Note",
-                    value=nota_salvata,
-                    height=100,
-                    key=f"nota_{anno_w}_{week_w}",
-                    label_visibility="collapsed",
-                    placeholder="Scrivi qui eventuali note o valutazioni per questa settimana..."
-                )
 
                 st.write("**Stima Volumi Giornalieri:**")
-                anagrafica_idx_report = st.session_state.df_anagrafica.set_index("Nome")
                 report = []
                 for chiave in GIORNI_CHIAVI:
-                    op_m = (df_modificato[chiave].isin(["06:00-13:00", "06:00-13:00*", "07:00-14:00", "07:00-14:00*"])).sum()
+                    op_m = (df_modificato[chiave].isin(["06:00-13:00", "06:00-13:00*", "07:00-14:00"])).sum()
                     op_p = (df_modificato[chiave].isin(["12:30-19:30", "13:00-20:00"])).sum()
-                    ore_tot = 0.0
-                    for _, riga in df_modificato.iterrows():
-                        try:
-                            tipo_orario_dip = anagrafica_idx_report.at[riga["Dipendente"], "Tipo Orario"]
-                        except KeyError:
-                            tipo_orario_dip = "Disponibile"
-                        ore_tot += ore_turno(str(riga[chiave]), tipo_orario_dip)
                     report.append({
                         "Giorno": col_labels[chiave],
                         "Mattina (06-13)": int(op_m),
                         "Pomeriggio": int(op_p),
                         "Tot. Operatori": int(op_m + op_p),
-                        "Totale Ore": round(ore_tot, 2),
-                        "Pezzi Stimati": int(ore_tot * pieces_ora),
+                        "Pezzi Stimati": int((op_m + op_p) * 7 * pieces_ora),
                     })
                 df_report = pd.DataFrame(report).set_index("Giorno").T
-
-                df_fmt = pd.DataFrame(index=df_report.index, columns=df_report.columns, dtype=object)
-                for idx in df_report.index:
-                    if idx == "Totale Ore":
-                        df_fmt.loc[idx] = [f"{v:.2f}".rstrip("0").rstrip(".") for v in df_report.loc[idx]]
-                    else:
-                        df_fmt.loc[idx] = [f"{int(round(v))}" for v in df_report.loc[idx]]
-
                 styler = (
-                    df_fmt.style
+                    df_report.style
                     .set_table_styles([
                         {"selector": "th", "props": [("text-align", "right"), ("border", "1px solid #333")]},
                         {"selector": "td", "props": [("text-align", "right"), ("border", "1px solid #333")]},
@@ -1747,22 +1440,18 @@ with tab_turni:
 with tab_anagrafica:
     st.subheader("👥 Lista Personale e Assenze Programmate")
     df_show = st.session_state.df_anagrafica.copy()
-    if "Malattia Dal" in df_show.columns:
-        df_show["Malattia Dal"] = df_show["Malattia Dal"].apply(parse_data_malattia)
     if "Malattia Fino Al" in df_show.columns:
-        df_show["Malattia Fino Al"] = df_show["Malattia Fino Al"].apply(parse_data_malattia)
+        df_show["Malattia Fino Al"] = pd.to_datetime(df_show["Malattia Fino Al"], errors="coerce").dt.date
 
     config_anagrafica = {
         "Contratto": st.column_config.SelectboxColumn("Contratto", options=["FT", "PT"], required=True),
         "Squadra": st.column_config.NumberColumn("Squadra", min_value=1, max_value=4, step=1, required=True),
         "Riposo 1": st.column_config.SelectboxColumn("Riposo 1 (PT)", options=["Nessuno"] + GIORNI_BASE),
         "Riposo 2": st.column_config.SelectboxColumn("Riposo 2 (PT)", options=["Nessuno"] + GIORNI_BASE),
-        "Malattia Dal": st.column_config.DateColumn("Malattia Dal", format="DD/MM/YYYY"),
         "Malattia Fino Al": st.column_config.DateColumn("Malattia Fino Al", format="DD/MM/YYYY"),
         "Ferie W1": st.column_config.NumberColumn("Ferie W1 (N. Sett. ISO)", min_value=1, max_value=53),
         "Ferie W2": st.column_config.NumberColumn("Ferie W2 (N. Sett. ISO)", min_value=1, max_value=53),
         "Ferie W3": st.column_config.NumberColumn("Ferie W3 (N. Sett. ISO)", min_value=1, max_value=53),
-        "Tipo Orario": st.column_config.SelectboxColumn("Tipo Orario", options=TIPO_ORARIO_OPZIONI, required=True),
     }
     df_editato = st.data_editor(
         df_show, column_config=config_anagrafica,
@@ -1784,7 +1473,6 @@ with tab_anagrafica:
             nuova_squadra   = st.selectbox("Squadra", [1, 2, 3, 4])
             nuovo_r1 = st.selectbox("Riposo Fisso 1 (PT)", ["Nessuno"] + GIORNI_BASE)
             nuovo_r2 = st.selectbox("Riposo Fisso 2 (PT)", ["Nessuno"] + GIORNI_BASE)
-            nuovo_tipo_orario = st.selectbox("Tipo Orario", TIPO_ORARIO_OPZIONI)
             if st.button("Aggiungi", width="stretch"):
                 if not nuovo_nome.strip():
                     st.error("Inserisci un nome valido!")
@@ -1794,9 +1482,8 @@ with tab_anagrafica:
                         "Squadra": nuova_squadra,
                         "Riposo 1": nuovo_r1 if nuovo_contratto == "PT" else "Nessuno",
                         "Riposo 2": nuovo_r2 if nuovo_contratto == "PT" else "Nessuno",
-                        "Malattia Dal": None, "Malattia Fino Al": None,
+                        "Malattia Fino Al": None,
                         "Ferie W1": None, "Ferie W2": None, "Ferie W3": None,
-                        "Tipo Orario": nuovo_tipo_orario,
                     }
                     nuovo_df = pd.concat([st.session_state.df_anagrafica, pd.DataFrame([nuova_riga])], ignore_index=True)
                     salva_anagrafica(nuovo_df)
