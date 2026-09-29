@@ -883,7 +883,7 @@ WS_NOTE = "note"
 COLONNE_TURNI = tuple(["Anno", "Week", "Definitiva", "Dipendente", "Contratto", "Squadra"] + GIORNI_CHIAVI)
 COLONNE_MODIFICHE = ("Anno", "Week", "Dipendente", "Colonna", "Valore")
 COLONNE_ANAGRAFICA = ("Nome", "Contratto", "Squadra", "Riposo 1", "Riposo 2",
-                       "Malattia Dal", "Malattia Fino Al", "Ferie W1", "Ferie W2", "Ferie W3", "Tipo Orario")
+                       "Malattia Dal", "Malattia Fino Al", "Ferie W1", "Ferie W2", "Ferie W3", "Tipo Orario", "Domenica Fissa")
 COLONNE_NOTE = ("Anno", "Week", "Testo")
 
 @st.cache_resource(show_spinner=False)
@@ -1116,6 +1116,22 @@ def in_malattia(giorno, mal_dal, mal_al):
 
 
 # ─────────────────────────────────────────────
+# FLAG "DOMENICA FISSA" (anagrafica)
+# Nel foglio si salva "SI" (flaggato) oppure cella vuota.
+# ─────────────────────────────────────────────
+FLAG_VERO = {"si", "sì", "true", "1", "x", "vero", "yes"}
+
+def flag_domenica_fissa(v):
+    return str(v).strip().lower() in FLAG_VERO
+
+def _anagrafica_per_foglio(df):
+    out = df.copy()
+    out["Domenica Fissa"] = [
+        "SI" if flag_domenica_fissa(v) else "" for v in out.get("Domenica Fissa", [False] * len(out))
+    ]
+    return out
+
+# ─────────────────────────────────────────────
 # INIT ANAGRAFICA
 # ─────────────────────────────────────────────
 def init_anagrafica():
@@ -1134,6 +1150,7 @@ def init_anagrafica():
         df["Tipo Orario"] = df["Tipo Orario"].apply(
             lambda v: v if v in TIPO_ORARIO_OPZIONI else None
         )
+        df["Domenica Fissa"] = df["Domenica Fissa"].apply(flag_domenica_fissa)
         return df.reset_index(drop=True)
 
     nomi_base = [
@@ -1157,18 +1174,20 @@ def init_anagrafica():
             "Riposo 1": "Nessuno", "Riposo 2": "Nessuno",
             "Malattia Dal": None, "Malattia Fino Al": None,
             "Ferie W1": None, "Ferie W2": None, "Ferie W3": None,
-            "Tipo Orario": None,
+            "Tipo Orario": None, "Domenica Fissa": False,
         })
     df = pd.DataFrame(rows)
-    _scrivi_worksheet_df(WS_ANAGRAFICA, COLONNE_ANAGRAFICA, df)
+    _scrivi_worksheet_df(WS_ANAGRAFICA, COLONNE_ANAGRAFICA, _anagrafica_per_foglio(df))
     return df
 
 if "df_anagrafica" not in st.session_state:
     st.session_state.df_anagrafica = init_anagrafica()
 
 def salva_anagrafica(df):
-    st.session_state.df_anagrafica = df.copy()
-    _scrivi_worksheet_df(WS_ANAGRAFICA, COLONNE_ANAGRAFICA, df)
+    df = df.copy()
+    df["Domenica Fissa"] = df["Domenica Fissa"].apply(flag_domenica_fissa) if "Domenica Fissa" in df.columns else False
+    st.session_state.df_anagrafica = df
+    _scrivi_worksheet_df(WS_ANAGRAFICA, COLONNE_ANAGRAFICA, _anagrafica_per_foglio(df))
 
 # ─────────────────────────────────────────────
 # LEGGI DOM_S DA FILE STORICO (settimana prima della finestra)
@@ -1223,6 +1242,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
         rows.append({
             "Dipendente": nome, "Contratto": dip["Contratto"], "Squadra": dip["Squadra"],
             "_in_ferie": in_ferie, "_in_ferie_succ": in_ferie_succ,
+            "_dom_fissa": flag_domenica_fissa(dip.get("Domenica Fissa")),
             "_mal_dal": mal_dal, "_mal_al": mal_al,
             "Dom_P": None, "Lun": None, "Mar": None, "Mer": None,
             "Gio": None, "Ven": None, "Sab": None, "Dom_S": None,
@@ -1245,11 +1265,15 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
                 df.at[idx, chiave] = t_base
     # ── Dom_P: copia esatta della Dom_S della settimana precedente ──
     # ECCEZIONE 1: chi è in FERIE questa settimana lavora SEMPRE Dom_P con asterisco.
+    # ECCEZIONE 2: chi ha il flag "Domenica Fissa" lavora SEMPRE Dom_P con asterisco.
+    # (malattia e ferie hanno comunque la precedenza)
     for idx, row in df.iterrows():
         in_mal_dom_p = in_malattia(data_dom_p, row["_mal_dal"], row["_mal_al"])
         if in_mal_dom_p:
             df.at[idx, "Dom_P"] = "MALATTIA"
         elif row["_in_ferie"]:
+            df.at[idx, "Dom_P"] = TURNO_DOMENICA + "*"
+        elif row["_dom_fissa"]:
             df.at[idx, "Dom_P"] = TURNO_DOMENICA + "*"
         else:
             val_prec = dom_s_prec.get(row["Dipendente"], None)
@@ -1283,8 +1307,8 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             t1, t2 = target_di(riposi[0]), target_di(riposi[1])
             r_prim = riposi[0] if t1 <= t2 else riposi[1]
             r_sec  = riposi[1] if t1 <= t2 else riposi[0]
-            # 2 riposi se ha lavorato Dom_P, 1 se no (domenica alternata per tutti)
-            da_app = [r_prim, r_sec] if ha_lavorato_dom else [r_prim]
+            # 2 riposi se ha lavorato Dom_P o ha la domenica fissa, 1 se no
+            da_app = [r_prim, r_sec] if (ha_lavorato_dom or row["_dom_fissa"]) else [r_prim]
         else:
             da_app = riposi
 
@@ -1331,6 +1355,8 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             df.at[idx, "Dom_S"] = "MALATTIA"
         elif row["_in_ferie"]:
             df.at[idx, "Dom_S"] = "RIPOSO"
+        elif row["_dom_fissa"]:
+            df.at[idx, "Dom_S"] = TURNO_DOMENICA + "*"
         elif row["_in_ferie_succ"]:
             df.at[idx, "Dom_S"] = TURNO_DOMENICA + "*"
         else:
@@ -1358,7 +1384,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             df.at[idx, "Dom_S"] = TURNO_DOMENICA
             mancanti -= 1
 
-    df = df.drop(columns=["_in_ferie", "_in_ferie_succ", "_mal_dal", "_mal_al"])
+    df = df.drop(columns=["_in_ferie", "_in_ferie_succ", "_dom_fissa", "_mal_dal", "_mal_al"])
     return df[["Dipendente", "Contratto", "Squadra"] + GIORNI_CHIAVI]
 
 # ─────────────────────────────────────────────
@@ -1869,6 +1895,11 @@ with tab_anagrafica:
     if "Malattia Fino Al" in df_show.columns:
         df_show["Malattia Fino Al"] = df_show["Malattia Fino Al"].apply(parse_data_malattia)
 
+    df_show["Domenica Fissa"] = (
+        df_show["Domenica Fissa"].apply(flag_domenica_fissa)
+        if "Domenica Fissa" in df_show.columns else False
+    )
+
     senza_tipo = df_show.loc[~df_show["Tipo Orario"].isin(TIPO_ORARIO_OPZIONI), "Nome"].tolist()
     if senza_tipo:
         st.warning(
@@ -1887,6 +1918,10 @@ with tab_anagrafica:
         "Ferie W2": st.column_config.NumberColumn("Ferie W2 (N. Sett. ISO)", min_value=1, max_value=53),
         "Ferie W3": st.column_config.NumberColumn("Ferie W3 (N. Sett. ISO)", min_value=1, max_value=53),
         "Tipo Orario": st.column_config.SelectboxColumn("Tipo Orario", options=TIPO_ORARIO_OPZIONI, required=True),
+        "Domenica Fissa": st.column_config.CheckboxColumn(
+            "Domenica Fissa", default=False,
+            help="Se spuntato lavora sempre Dom_P e Dom_S, con asterisco (ferie e malattia hanno la precedenza)."
+        ),
     }
     df_editato = st.data_editor(
         df_show, column_config=config_anagrafica,
@@ -1909,6 +1944,7 @@ with tab_anagrafica:
             nuovo_r1 = st.selectbox("Riposo Fisso 1 (PT)", ["Nessuno"] + GIORNI_BASE)
             nuovo_r2 = st.selectbox("Riposo Fisso 2 (PT)", ["Nessuno"] + GIORNI_BASE)
             nuovo_tipo_orario = st.selectbox("Tipo Orario", TIPO_ORARIO_OPZIONI)
+            nuova_dom_fissa = st.checkbox("Domenica fissa (sempre con asterisco)")
             if st.button("Aggiungi", width="stretch"):
                 if not nuovo_nome.strip():
                     st.error("Inserisci un nome valido!")
@@ -1921,6 +1957,7 @@ with tab_anagrafica:
                         "Malattia Dal": None, "Malattia Fino Al": None,
                         "Ferie W1": None, "Ferie W2": None, "Ferie W3": None,
                         "Tipo Orario": nuovo_tipo_orario,
+                        "Domenica Fissa": nuova_dom_fissa,
                     }
                     nuovo_df = pd.concat([st.session_state.df_anagrafica, pd.DataFrame([nuova_riga])], ignore_index=True)
                     salva_anagrafica(nuovo_df)
