@@ -108,16 +108,16 @@ ASSENTE = {"RIPOSO", "MALATTIA", "FERIE", "PERMESSO"}
 # La traduzione in orario ridotto avviene SOLO in visualizzazione/export
 # (Vista Colorata, PDF, Excel), in base al "Tipo Orario" del dipendente.
 # ─────────────────────────────────────────────
-TIPO_ORARIO_OPZIONI = ["Disponibile", "Contratto 6,15", "Contratto 6,40"]
+TIPO_ORARIO_OPZIONI = ["Contratto 6,15", "Contratto 6,40"]
+# Usato SOLO come rete di sicurezza se in anagrafica il contratto manca o non è valido
+# (l'app segnala il problema a video). Stessa regola che aveva l'export Excel.
+DEFAULT_TIPO_ORARIO = "Contratto 6,40"
+
+def tipo_orario_valido(v):
+    return v if v in TIPO_ORARIO_OPZIONI else DEFAULT_TIPO_ORARIO
 
 # mappa: (tipo_orario, turno_grezzo_senza_asterisco) -> orario_visualizzato_senza_asterisco
 TRADUZIONE_ORARI = {
-    "Disponibile": {
-        "06:00-13:00": "06:00-13:00",
-        "07:00-14:00": "07:00-14:00",
-        "12:30-19:30": "12:30-19:30",
-        "13:00-20:00": "13:00-20:00",
-    },
     "Contratto 6,15": {
         "06:00-13:00": "06:00-12:15",
         "07:00-14:00": "07:45-14:00",
@@ -137,12 +137,10 @@ TRADUZIONE_ORARI = {
 # inizio diverso per tipo contratto, ma sempre con fine fissa alle 13:00
 # (il dato reale salvato resta invariato: "06:00-13:00").
 DOMENICA_INIZIO_MATTINA = {
-    "Disponibile":     "6.30",
     "Contratto 6,15":  "6.45",
     "Contratto 6,40":  "6.20",
 }
 DOMENICA_INIZIO_MATTINA_HM = {
-    "Disponibile":     (6, 30),
     "Contratto 6,15":  (6, 45),
     "Contratto 6,40":  (6, 20),
 }
@@ -155,7 +153,7 @@ def traduci_orario_visualizzato(val, tipo_orario):
     """
     if val in ASSENTE:
         return val
-    tipo = tipo_orario if tipo_orario in TRADUZIONE_ORARI else "Disponibile"
+    tipo = tipo_orario_valido(tipo_orario)
     asterisco = val.endswith("*")
     base = val[:-1] if asterisco else val
     tradotto = TRADUZIONE_ORARI[tipo].get(base, base)
@@ -178,6 +176,88 @@ def ore_turno(val, tipo_orario):
         return 0.0
     minuti = (h_fi * 60 + m_fi) - (h_in * 60 + m_in)
     return max(minuti, 0) / 60.0
+
+
+# ─────────────────────────────────────────────
+# ORARI ESATTI DA CONTRATTO NELL'EDITOR (menu a tendina)
+# Il dato salvato resta "grezzo" (06:00-13:00 ecc.), così copertura, colori
+# ed export non cambiano. Solo la tabella modificabile mostra e accetta gli
+# orari esatti del contratto della persona (es. 06:00-12:15 o 06:00-12:40).
+# ─────────────────────────────────────────────
+COLONNE_DOMENICA = {"Dom_P", "Dom_S"}
+
+def raw_a_esatto(val, tipo_orario, is_domenica=False):
+    """'06:00-13:00*' -> orario esatto del contratto. Le assenze passano invariate."""
+    val = str(val)
+    if val in ASSENTE or val in ("", "None", "nan"):
+        return val
+    tipo = tipo_orario_valido(tipo_orario)
+    asterisco = val.endswith("*")
+    base = val[:-1] if asterisco else val
+    if is_domenica and base == TURNO_DOMENICA:
+        h, m = DOMENICA_INIZIO_MATTINA_HM[tipo]
+        esatto = f"{h:02d}:{m:02d}-13:00"
+    else:
+        esatto = TRADUZIONE_ORARI[tipo].get(base, base)
+    return esatto + "*" if asterisco else esatto
+
+def _mappa_inversa_esatto_raw():
+    inv = {}
+    for tipo in TIPO_ORARIO_OPZIONI:
+        for base in TRADUZIONE_ORARI[tipo]:
+            inv[raw_a_esatto(base, tipo, False)] = base
+        inv[raw_a_esatto(TURNO_DOMENICA, tipo, True)] = TURNO_DOMENICA
+    return inv
+_INV_ESATTO_RAW = _mappa_inversa_esatto_raw()
+
+def esatto_a_raw(val):
+    """Inverso di raw_a_esatto (valido per entrambi i contratti)."""
+    val = str(val)
+    asterisco = val.endswith("*")
+    base = val[:-1] if asterisco else val
+    raw = _INV_ESATTO_RAW.get(base, base)
+    return raw + "*" if asterisco else raw
+
+def opzioni_esatte(is_domenica=False):
+    """Opzioni del menu a tendina: gli orari esatti di entrambi i contratti."""
+    out = []
+    for opz in OPZIONI_TURNO:
+        for tipo in TIPO_ORARIO_OPZIONI:
+            v = raw_a_esatto(opz, tipo, is_domenica)
+            if v not in out:
+                out.append(v)
+    return out
+
+def tipo_orario_per_nome():
+    df = st.session_state.df_anagrafica
+    return {n: tipo_orario_valido(t) for n, t in zip(df["Nome"], df["Tipo Orario"])}
+
+def df_raw_a_esatto(df, tipo_map):
+    out = df.copy()
+    for chiave in GIORNI_CHIAVI:
+        out[chiave] = [
+            raw_a_esatto(v, tipo_map.get(n, DEFAULT_TIPO_ORARIO), chiave in COLONNE_DOMENICA)
+            for n, v in zip(out["Dipendente"], out[chiave])
+        ]
+    return out
+
+def df_esatto_a_raw(df):
+    out = df.copy()
+    for chiave in GIORNI_CHIAVI:
+        out[chiave] = [esatto_a_raw(v) for v in out[chiave]]
+    return out
+
+def celle_contratto_errato(df_esatto, tipo_map):
+    """Celle il cui orario appartiene all'altro contratto: (nome, colonna, scelto, corretto)."""
+    errori = []
+    for _, riga in df_esatto.iterrows():
+        tipo = tipo_map.get(riga["Dipendente"], DEFAULT_TIPO_ORARIO)
+        for chiave in GIORNI_CHIAVI:
+            v = str(riga[chiave])
+            corretto = raw_a_esatto(esatto_a_raw(v), tipo, chiave in COLONNE_DOMENICA)
+            if corretto != v:
+                errori.append((riga["Dipendente"], chiave, v, corretto))
+    return errori
 
 # ─────────────────────────────────────────────
 # UTILITY
@@ -251,7 +331,7 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
         elementi.append(Paragraph("PROVVISORIO", status_style_prov))
     elementi.append(Spacer(1, 2*mm))
 
-    def fmt_orario(val, is_domenica=False, tipo_orario="Disponibile"):
+    def fmt_orario(val, is_domenica=False, tipo_orario=DEFAULT_TIPO_ORARIO):
         """Converte un orario (standard o tradotto per Tipo Orario) in
         (testo_breve, fascia). Fascia 'mattino' se inizia prima delle 12.
         Per la colonna Domenica (Dom_S), il turno che inizia alle 06:00
@@ -272,7 +352,7 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
             return h if m == "00" else f"{h}.{m}"
 
         if is_domenica and h_in == "06" and m_in == "00":
-            testo_inizio = DOMENICA_INIZIO_MATTINA.get(tipo_orario, "6.30")
+            testo_inizio = DOMENICA_INIZIO_MATTINA[tipo_orario_valido(tipo_orario)]
             testo_fine = "13"
         else:
             testo_inizio = fmt_ora(h_in, m_in)
@@ -305,9 +385,9 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
     for r_idx, (_, row) in enumerate(df.iterrows(), start=1):
         riga = [row["Dipendente"]]
         try:
-            tipo_orario_dip = anagrafica_idx.at[row["Dipendente"], "Tipo Orario"]
+            tipo_orario_dip = tipo_orario_valido(anagrafica_idx.at[row["Dipendente"], "Tipo Orario"])
         except KeyError:
-            tipo_orario_dip = "Disponibile"
+            tipo_orario_dip = DEFAULT_TIPO_ORARIO
         for gi, chiave in enumerate(giorni_pdf):
             c1 = 1 + gi * 2
             c2 = c1 + 1
@@ -444,7 +524,7 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
         periodo = (f"dal {dom_p_data.day} {NOMI_MESI[dom_p_data.month]} "
                    f"al {dom_s_data.day} {NOMI_MESI[dom_s_data.month]}")
 
-    def fmt_orario(val, is_domenica=False, tipo_orario="Disponibile"):
+    def fmt_orario(val, is_domenica=False, tipo_orario=DEFAULT_TIPO_ORARIO):
         """Converte un orario (standard o tradotto per Tipo Orario) in
         (testo_breve, fascia). Fascia 'mattino' se inizia prima delle 12.
         Per la colonna Domenica (Dom_S), il turno che inizia alle 06:00
@@ -465,7 +545,7 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
             return h if m == "00" else f"{h}.{m}"
 
         if is_domenica and h_in == "06" and m_in == "00":
-            testo_inizio = DOMENICA_INIZIO_MATTINA.get(tipo_orario, "6.30")
+            testo_inizio = DOMENICA_INIZIO_MATTINA[tipo_orario_valido(tipo_orario)]
             testo_fine = "13"
         else:
             testo_inizio = fmt_ora(h_in, m_in)
@@ -507,9 +587,9 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
         for r_idx, (_, row) in enumerate(df_gruppo.iterrows(), start=1):
             riga = [row["Dipendente"]]
             try:
-                tipo_orario_dip = anagrafica_idx.at[row["Dipendente"], "Tipo Orario"]
+                tipo_orario_dip = tipo_orario_valido(anagrafica_idx.at[row["Dipendente"], "Tipo Orario"])
             except KeyError:
-                tipo_orario_dip = "Disponibile"
+                tipo_orario_dip = DEFAULT_TIPO_ORARIO
             for gi, chiave in enumerate(giorni_pdf):
                 val = traduci_orario_visualizzato(str(row[chiave]), tipo_orario_dip)
                 if val in ASSENTE:
@@ -625,8 +705,6 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
       - Turni pomeriggio -> In1/Out1 vuote, In2/Out2 valorizzate.
       - Orari sempre in formato HH.MM (punto), arrotondati al quarto d'ora
         piu' vicino (es. "06.00","12.45").
-      - I dipendenti "Disponibile" vengono mostrati con gli orari di
-        "Contratto 6,40" (solo visualizzazione Excel).
       - Assenze (RIPOSO/FERIE/MALATTIA/PERMESSO) -> tutte 4 le colonne vuote.
       - Celle dati senza colori (testo semplice).
     Header su due righe: riga 1 = nome giorno (merged su 4 colonne),
@@ -635,7 +713,7 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
     giorni_excel = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
     nomi_giorni_excel = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"]
 
-    def split_orario(val, is_domenica=False, tipo_orario="Disponibile"):
+    def split_orario(val, is_domenica=False, tipo_orario=DEFAULT_TIPO_ORARIO):
         """Restituisce (in1, out1, in2, out2) come stringhe, vuote se non applicabile.
         Orari arrotondati al quarto d'ora più vicino, formato con punto (es. 19.15).
         Per la colonna Domenica (Dom_S), il turno che inizia alle 06:00 viene
@@ -651,7 +729,7 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
             return ("", "", "", "")
 
         if is_domenica and h_in == 6 and m_in == 0:
-            h_dom, m_dom = DOMENICA_INIZIO_MATTINA_HM.get(tipo_orario, (6, 30))
+            h_dom, m_dom = DOMENICA_INIZIO_MATTINA_HM[tipo_orario_valido(tipo_orario)]
             txt_in = f"{h_dom:02d}.{m_dom:02d}"
             txt_fi = "13.00"
             return (txt_in, txt_fi, "", "")
@@ -744,14 +822,9 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
         cell_nome.alignment = Alignment(horizontal="left", vertical="center")
 
         try:
-            tipo_orario_dip = anagrafica_idx.at[row["Dipendente"], "Tipo Orario"]
+            tipo_orario_dip = tipo_orario_valido(anagrafica_idx.at[row["Dipendente"], "Tipo Orario"])
         except KeyError:
-            tipo_orario_dip = "Disponibile"
-        # Solo nell'export Excel: i dipendenti "Disponibile" vengono mostrati
-        # con gli orari di "Contratto 6,40" (richiesta esplicita, solo visualizzazione,
-        # non tocca il dato salvato né le altre viste/export).
-        if tipo_orario_dip == "Disponibile":
-            tipo_orario_dip = "Contratto 6,40"
+            tipo_orario_dip = DEFAULT_TIPO_ORARIO
 
         for gi, chiave in enumerate(giorni_excel):
             c1 = 2 + gi * 4
@@ -1056,8 +1129,10 @@ def init_anagrafica():
             df[col] = df[col].astype("Int64")
             if col != "Squadra":
                 df[col] = df[col].astype(object).where(df[col].notna(), None)
+        # Valori non validi (vuoti, o il vecchio "Disponibile") restano vuoti:
+        # l'app li segnala in Anagrafica e nel frattempo usa DEFAULT_TIPO_ORARIO.
         df["Tipo Orario"] = df["Tipo Orario"].apply(
-            lambda v: v if v in TIPO_ORARIO_OPZIONI else "Disponibile"
+            lambda v: v if v in TIPO_ORARIO_OPZIONI else None
         )
         return df.reset_index(drop=True)
 
@@ -1082,7 +1157,7 @@ def init_anagrafica():
             "Riposo 1": "Nessuno", "Riposo 2": "Nessuno",
             "Malattia Dal": None, "Malattia Fino Al": None,
             "Ferie W1": None, "Ferie W2": None, "Ferie W3": None,
-            "Tipo Orario": "Disponibile",
+            "Tipo Orario": None,
         })
     df = pd.DataFrame(rows)
     _scrivi_worksheet_df(WS_ANAGRAFICA, COLONNE_ANAGRAFICA, df)
@@ -1145,12 +1220,10 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
         in_ferie_succ = (week_num + 1) in ferie_set
         mal_dal = parse_data_malattia(dip.get("Malattia Dal"))
         mal_al = parse_data_malattia(dip.get("Malattia Fino Al"))
-        tipo_orario = str(dip.get("Tipo Orario", "Disponibile") or "Disponibile")
         rows.append({
             "Dipendente": nome, "Contratto": dip["Contratto"], "Squadra": dip["Squadra"],
             "_in_ferie": in_ferie, "_in_ferie_succ": in_ferie_succ,
             "_mal_dal": mal_dal, "_mal_al": mal_al,
-            "_tipo_orario": tipo_orario,
             "Dom_P": None, "Lun": None, "Mar": None, "Mer": None,
             "Gio": None, "Ven": None, "Sab": None, "Dom_S": None,
         })
@@ -1172,17 +1245,11 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
                 df.at[idx, chiave] = t_base
     # ── Dom_P: copia esatta della Dom_S della settimana precedente ──
     # ECCEZIONE 1: chi è in FERIE questa settimana lavora SEMPRE Dom_P con asterisco.
-    # ECCEZIONE 2: PT con Contratto 6,15 o 6,40 lavorano SEMPRE Dom_P con asterisco.
-    CONTRATTI_FISSI = {"Contratto 6,15", "Contratto 6,40"}
     for idx, row in df.iterrows():
         in_mal_dom_p = in_malattia(data_dom_p, row["_mal_dal"], row["_mal_al"])
-        pt_contrattualizzato = (row["Contratto"] == "PT" and row["_tipo_orario"] in CONTRATTI_FISSI)
         if in_mal_dom_p:
             df.at[idx, "Dom_P"] = "MALATTIA"
         elif row["_in_ferie"]:
-            df.at[idx, "Dom_P"] = TURNO_DOMENICA + "*"
-        elif pt_contrattualizzato:
-            # PT con contratto ridotto: domenica sempre fissa con asterisco
             df.at[idx, "Dom_P"] = TURNO_DOMENICA + "*"
         else:
             val_prec = dom_s_prec.get(row["Dipendente"], None)
@@ -1194,8 +1261,6 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
     # ── Riposi PT (priorità: giorni fissi rispettati sempre) ──
     # Lavora Dom_P → 2 riposi Lun-Sab (entrambi i giorni fissi) = 5 gg lavoro
     # Non lavora Dom_P → 1 solo riposo Lun-Sab (domenica già bruciata) = 5 gg lavoro
-    # ECCEZIONE: PT con Contratto 6,15 o 6,40 lavorano SEMPRE Dom_P e Dom_S,
-    # quindi ricevono SEMPRE 2 riposi fissi Lun-Sab.
     for idx, row in df.iterrows():
         if row["Contratto"] != "PT" or row["_in_ferie"]:
             continue
@@ -1205,7 +1270,6 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
         if not riposi:
             continue
 
-        pt_contrattualizzato = row["_tipo_orario"] in CONTRATTI_FISSI
         dom_p_val = str(df.at[idx, "Dom_P"])
         ha_lavorato_dom = dom_p_val not in ASSENTE
 
@@ -1219,9 +1283,8 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             t1, t2 = target_di(riposi[0]), target_di(riposi[1])
             r_prim = riposi[0] if t1 <= t2 else riposi[1]
             r_sec  = riposi[1] if t1 <= t2 else riposi[0]
-            # PT contrattualizzati: sempre 2 riposi fissi (lavorano sempre entrambe le domeniche)
-            # PT standard: 2 riposi se ha lavorato Dom_P, 1 se no
-            da_app = [r_prim, r_sec] if (ha_lavorato_dom or pt_contrattualizzato) else [r_prim]
+            # 2 riposi se ha lavorato Dom_P, 1 se no (domenica alternata per tutti)
+            da_app = [r_prim, r_sec] if ha_lavorato_dom else [r_prim]
         else:
             da_app = riposi
 
@@ -1262,16 +1325,12 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             df.at[idx, miglior] = "RIPOSO"
 
     # ── Dom_S: rotazione rispetto a Dom_P della STESSA settimana ──
-    # ECCEZIONE: PT con Contratto 6,15 o 6,40 lavorano SEMPRE Dom_S con asterisco.
     for idx, row in df.iterrows():
         in_mal_dom_s = in_malattia(data_dom_s, row["_mal_dal"], row["_mal_al"])
-        pt_contrattualizzato = (row["Contratto"] == "PT" and row["_tipo_orario"] in CONTRATTI_FISSI)
         if in_mal_dom_s:
             df.at[idx, "Dom_S"] = "MALATTIA"
         elif row["_in_ferie"]:
             df.at[idx, "Dom_S"] = "RIPOSO"
-        elif pt_contrattualizzato:
-            df.at[idx, "Dom_S"] = TURNO_DOMENICA + "*"
         elif row["_in_ferie_succ"]:
             df.at[idx, "Dom_S"] = TURNO_DOMENICA + "*"
         else:
@@ -1288,11 +1347,10 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
     lav = (~df["Dom_S"].isin(ASSENTE)).sum()
     mancanti = TARGET_DOM - lav
     if mancanti > 0:
-        # Escludi chi è in ferie o PT contrattualizzato (già hanno Dom_S fissa)
+        # Escludi chi è in ferie
         candidati = df[
             (df["Dom_S"] == "RIPOSO") &
-            (~df["_in_ferie"]) &
-            ~((df["Contratto"] == "PT") & (df["_tipo_orario"].isin(CONTRATTI_FISSI)))
+            (~df["_in_ferie"])
         ].index
         for idx in candidati:
             if mancanti <= 0:
@@ -1300,7 +1358,7 @@ def genera_tabellone(week_num, anno, lunedi, dom_s_prec, target_pct):
             df.at[idx, "Dom_S"] = TURNO_DOMENICA
             mancanti -= 1
 
-    df = df.drop(columns=["_in_ferie", "_in_ferie_succ", "_mal_dal", "_mal_al", "_tipo_orario"])
+    df = df.drop(columns=["_in_ferie", "_in_ferie_succ", "_mal_dal", "_mal_al"])
     return df[["Dipendente", "Contratto", "Squadra"] + GIORNI_CHIAVI]
 
 # ─────────────────────────────────────────────
@@ -1444,7 +1502,7 @@ with tab_turni:
                     config_turni.update({
                         chiave: st.column_config.SelectboxColumn(
                             col_labels[chiave],
-                            options=OPZIONI_TURNO,
+                            options=opzioni_esatte(chiave in COLONNE_DOMENICA),
                             disabled=(chiave == "Dom_P")
                         )
                         for chiave in GIORNI_CHIAVI
@@ -1461,7 +1519,7 @@ with tab_turni:
                     config_turni.update({
                         chiave: st.column_config.SelectboxColumn(
                             col_labels[chiave],
-                            options=OPZIONI_TURNO,
+                            options=opzioni_esatte(chiave in COLONNE_DOMENICA),
                             disabled=(chiave == "Dom_P" and i > 0)
                         )
                         for chiave in GIORNI_CHIAVI
@@ -1497,14 +1555,26 @@ with tab_turni:
                     """, unsafe_allow_html=True)
                 with col_editor:
                     n_righe = len(df_calcolato)
-                    df_modificato = st.data_editor(
-                        df_calcolato,
+                    tipo_map = tipo_orario_per_nome()
+                    df_editato_esatto = st.data_editor(
+                        df_raw_a_esatto(df_calcolato, tipo_map),
                         column_config=config_turni,
                         width="stretch",
                         hide_index=True,
                         height=(n_righe + 1) * 35 + 3,
                         key=f"editor_{anno_w}_{week_w}"
                     )
+                    # Da qui in poi tutto il resto lavora sul dato grezzo, come prima.
+                    df_modificato = df_esatto_a_raw(df_editato_esatto)
+                    errori_contratto = celle_contratto_errato(df_editato_esatto, tipo_map)
+                    if errori_contratto:
+                        righe_err = "; ".join(
+                            f"{n} ({c}): {v} → {ok}" for n, c, v, ok in errori_contratto[:8]
+                        )
+                        st.warning(
+                            "⚠️ Orario non coerente col contratto in anagrafica. "
+                            "Verrà salvato con l'orario corretto: " + righe_err
+                        )
 
                 col1, col2, col3, col4, col5 = st.columns(5)
 
@@ -1680,7 +1750,7 @@ with tab_turni:
                     try:
                         tipo_orario_dip = anagrafica_idx.at[nome_dip, "Tipo Orario"]
                     except KeyError:
-                        tipo_orario_dip = "Disponibile"
+                        tipo_orario_dip = DEFAULT_TIPO_ORARIO
                     html.append('<tr>')
                     html.append(
                         f'<td style="border:1px solid #999;padding:4px 8px;font-weight:bold;'
@@ -1756,9 +1826,9 @@ with tab_turni:
                     ore_tot = 0.0
                     for _, riga in df_modificato.iterrows():
                         try:
-                            tipo_orario_dip = anagrafica_idx_report.at[riga["Dipendente"], "Tipo Orario"]
+                            tipo_orario_dip = tipo_orario_valido(anagrafica_idx_report.at[riga["Dipendente"], "Tipo Orario"])
                         except KeyError:
-                            tipo_orario_dip = "Disponibile"
+                            tipo_orario_dip = DEFAULT_TIPO_ORARIO
                         ore_tot += ore_turno(str(riga[chiave]), tipo_orario_dip)
                     report.append({
                         "Giorno": col_labels[chiave],
@@ -1798,6 +1868,13 @@ with tab_anagrafica:
         df_show["Malattia Dal"] = df_show["Malattia Dal"].apply(parse_data_malattia)
     if "Malattia Fino Al" in df_show.columns:
         df_show["Malattia Fino Al"] = df_show["Malattia Fino Al"].apply(parse_data_malattia)
+
+    senza_tipo = df_show.loc[~df_show["Tipo Orario"].isin(TIPO_ORARIO_OPZIONI), "Nome"].tolist()
+    if senza_tipo:
+        st.warning(
+            "⚠️ Contratto orario (6,15 / 6,40) mancante per: " + ", ".join(map(str, senza_tipo)) +
+            f". Nel frattempo vengono trattati come «{DEFAULT_TIPO_ORARIO}»: impostalo e salva."
+        )
 
     config_anagrafica = {
         "Contratto": st.column_config.SelectboxColumn("Contratto", options=["FT", "PT"], required=True),
