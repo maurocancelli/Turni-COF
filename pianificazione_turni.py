@@ -85,7 +85,7 @@ GIORNI_CHIAVI = ["Dom_P", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom_S"]
 GIORNI_BASE   = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato"]
 OFFSETS       = [-1, 0, 1, 2, 3, 4, 5, 6]
 
-OPZIONI_TURNO  = ["06:00-13:00", "06:00-13:00*", "07:00-14:00", "07:00-14:00*", "12:30-19:30", "13:00-20:00", "RIPOSO", "MALATTIA", "FERIE", "PERMESSO"]
+OPZIONI_TURNO  = ["06:00-13:00", "06:00-13:00*", "07:00-14:00", "07:00-14:00*", "12:30-19:30", "13:00-20:00", "RIPOSO", "MALATTIA", "FERIE", "PERMESSO", "CORSO"]
 TARGET_DEFAULT = {"Dom_P": 45, "Lun": 90, "Mar": 75, "Mer": 75, "Gio": 75, "Ven": 90, "Sab": 90, "Dom_S": 45}
 TARGET_DOM     = 10
 
@@ -99,7 +99,7 @@ MATRICE_TURNI = {
     3: {1: "13:00-20:00", 2: "12:30-19:30", 3: "06:00-13:00",  4: "06:00-13:00"},
 }
 
-ASSENTE = {"RIPOSO", "MALATTIA", "FERIE", "PERMESSO"}
+ASSENTE = {"RIPOSO", "MALATTIA", "FERIE", "PERMESSO", "CORSO"}
 
 # ─────────────────────────────────────────────
 # TIPO ORARIO (visualizzazione contrattuale ridotta)
@@ -149,7 +149,7 @@ def traduci_orario_visualizzato(val, tipo_orario):
     """
     Converte un valore turno 'grezzo' (es. '06:00-13:00*') nell'orario da
     mostrare in base al Tipo Orario del dipendente (Standard/Anziano/Recente).
-    Le assenze (RIPOSO/FERIE/MALATTIA/PERMESSO) passano invariate.
+    Le assenze (RIPOSO/FERIE/MALATTIA/PERMESSO/CORSO) passano invariate.
     """
     if val in ASSENTE:
         return val
@@ -275,7 +275,7 @@ def colora_celle(valore):
     v = str(valore)
     if v == "MALATTIA":  return "background-color:#ffcccc;color:#cc0000;font-weight:bold;"
     if v == "FERIE":     return "background-color:#ffe6cc;color:#cc6600;font-weight:bold;"
-    if v == "PERMESSO":  return "background-color:#e6f2ff;color:#0066cc;"
+    if v in ("PERMESSO", "CORSO"): return "background-color:#e6f2ff;color:#0066cc;"
     if v == "RIPOSO":    return "background-color:#f2f2f2;color:#7f7f7f;"
     if "06:00" in v:     return "background-color:#e6ffed;color:#1a7f37;"
     if "12:30" in v or "13:00" in v: return "background-color:#fbefff;color:#8250df;"
@@ -286,7 +286,7 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
     Genera un PDF: una riga per dipendente, due colonne per ogni giorno
     Lun-Dom: colonna sinistra = turno MATTINO (6-13), colonna destra =
     turno POMERIGGIO (12.30-19.30 o 13-20). Solo una delle due e' valorizzata.
-    Le assenze (RIPOSO/FERIE/MALATTIA/PERMESSO) sono scritte centrate
+    Le assenze (RIPOSO/FERIE/MALATTIA/PERMESSO/CORSO) sono scritte centrate
     su entrambe le colonne del giorno.
     """
     buffer = io.BytesIO()
@@ -452,6 +452,7 @@ def genera_pdf_settimana(df, week_num, lun_w, col_labels, definitiva):
         "FERIE":    (colors.HexColor("#FFE6CC"), colors.HexColor("#CC6600")),
         "MALATTIA": (colors.HexColor("#FFCCCC"), colors.HexColor("#CC0000")),
         "PERMESSO": (colors.HexColor("#E6F2FF"), colors.HexColor("#0066CC")),
+        "CORSO":    (colors.HexColor("#E6F2FF"), colors.HexColor("#0066CC")),
     }
 
     for (r_idx, gi), (kind, val) in cell_kind.items():
@@ -562,6 +563,7 @@ def genera_pdf_esposizione(df, week_num, lun_w, col_labels, definitiva):
         "FERIE":    (colors.HexColor("#FFE6CC"), colors.HexColor("#CC6600")),
         "MALATTIA": (colors.HexColor("#FFCCCC"), colors.HexColor("#CC0000")),
         "PERMESSO": (colors.HexColor("#E6F2FF"), colors.HexColor("#0066CC")),
+        "CORSO":    (colors.HexColor("#E6F2FF"), colors.HexColor("#0066CC")),
     }
 
     # Header colonne (comune alle due pagine)
@@ -705,7 +707,7 @@ def genera_excel_settimana(df, week_num, lun_w, col_labels, definitiva):
       - Turni pomeriggio -> In1/Out1 vuote, In2/Out2 valorizzate.
       - Orari sempre in formato HH.MM (punto), arrotondati al quarto d'ora
         piu' vicino (es. "06.00","12.45").
-      - Assenze (RIPOSO/FERIE/MALATTIA/PERMESSO) -> tutte 4 le colonne vuote.
+      - Assenze (RIPOSO/FERIE/MALATTIA/PERMESSO/CORSO) -> tutte 4 le colonne vuote.
       - Celle dati senza colori (testo semplice).
     Header su due righe: riga 1 = nome giorno (merged su 4 colonne),
     riga 2 = vuota.
@@ -1033,7 +1035,7 @@ def calcola_modifiche(df_originale, df_attuale, colonne_assenza_only=None):
     Confronta df_attuale con df_originale (generato dall'algoritmo) e
     restituisce dict {(nome, colonna): valore} per le celle diverse.
     Se colonne_assenza_only è True, considera solo modifiche che impostano
-    valori in ASSENTE (MALATTIA/FERIE/PERMESSO) o che rimuovono tali valori.
+    valori in ASSENTE (MALATTIA/FERIE/PERMESSO/CORSO) o che rimuovono tali valori.
     """
     modifiche = {}
     cols = [c for c in GIORNI_CHIAVI]
@@ -1533,7 +1535,7 @@ with tab_turni:
                         )
                         for chiave in GIORNI_CHIAVI
                     })
-                    msg = "🔒 **Settimana DEFINITIVA** — consegnata. Puoi modificare solo MALATTIA/FERIE/PERMESSO; gli orari altrui non cambiano."
+                    msg = "🔒 **Settimana DEFINITIVA** — consegnata. Puoi modificare solo MALATTIA/FERIE/PERMESSO/CORSO; gli orari altrui non cambiano."
                     if ha_mod:
                         msg += "  \n✏️ *Sono presenti modifiche manuali rispetto alla generazione originale.*"
                     st.success(msg)
@@ -1728,6 +1730,7 @@ with tab_turni:
                     "FERIE":    "background-color:#ffe6cc;color:#cc6600;",
                     "MALATTIA": "background-color:#ffcccc;color:#cc0000;",
                     "PERMESSO": "background-color:#e6f2ff;color:#0066cc;",
+                    "CORSO":    "background-color:#e6f2ff;color:#0066cc;",
                     "mattino":    "background-color:#e6ffed;color:#1a7f37;",
                     "pomeriggio": "background-color:#fbefff;color:#8250df;",
                 }
